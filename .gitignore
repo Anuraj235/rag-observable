@@ -1,0 +1,29 @@
+# Visual Studio
+.vs/
+*.vsidx
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
+Debug/
+Release/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.env
+.ipynb_checkpoints/
+
+# Streamlit / vector stores
+.streamlit/
+.chromadb/
+faiss_index/
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Data/outputs
+data/**/*.pickle
+outputs/

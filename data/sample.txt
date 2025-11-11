@@ -1,0 +1,8 @@
+Project Overview
+This folder will hold your source documents. Add .txt or .md files.
+Example questions:
+- What is the project about?
+- What metrics are we tracking?
+- How do we evaluate faithfulness?
+
+You can replace this with WikiQA or your own notes.
