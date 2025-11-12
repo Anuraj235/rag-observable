@@ -1,8 +1,3 @@
-Project Overview
-This folder will hold your source documents. Add .txt or .md files.
-Example questions:
-- What is the project about?
-- What metrics are we tracking?
-- How do we evaluate faithfulness?
-
-You can replace this with WikiQA or your own notes.
+This project explores retrieval-augmented generation (RAG).
+It combines document embeddings with a large language model.
+The system retrieves context from ChromaDB and uses GPT-4 to generate grounded answers.
