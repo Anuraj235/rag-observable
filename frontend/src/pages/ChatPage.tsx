@@ -90,6 +90,8 @@ type QueryResponse = {
 };
 
 const API_BASE = "http://localhost:8000";
+const CHAT_STORAGE_KEY = "rag_chat_messages";
+const RUN_HISTORY_KEY = "rag_run_history";
 
 /** Convert distance (smaller = better) to a bar width percentage. */
 function distanceWidth(distance: number | null): string {
@@ -107,11 +109,29 @@ const ChatPage: React.FC = () => {
   const [topK, setTopK] = useState<number>(3);
   const [showOffTopic, setShowOffTopic] = useState<boolean>(true);
 
+  // Track when we've loaded from storage so we don't overwrite it on first render
+  const [initialized, setInitialized] = useState(false);
+
   // For hover + click evidence previews on source pills
   const [hoveredEvidenceId, setHoveredEvidenceId] = useState<string | null>(null);
   const [pinnedEvidenceId, setPinnedEvidenceId] = useState<string | null>(null);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
+
+  // 🔹 On mount: load chat messages from sessionStorage
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(CHAT_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as Message[];
+        setMessages(parsed);
+      }
+    } catch (err) {
+      console.error("Failed to load chat messages from storage", err);
+    } finally {
+      setInitialized(true);
+    }
+  }, []);
 
   // ✅ Scroll the inner messages panel when messages length changes
   useEffect(() => {
@@ -123,8 +143,20 @@ const ChatPage: React.FC = () => {
   const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
   const lastMeta = lastAssistant?.meta;
 
+  // 🔹 Persist chat messages to sessionStorage
+  useEffect(() => {
+    if (!initialized) return;
+    try {
+      sessionStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(messages));
+    } catch (err) {
+      console.error("Failed to save chat messages to storage", err);
+    }
+  }, [messages, initialized]);
+
   // 🔹 Save assistant runs into sessionStorage for the Run History page
   useEffect(() => {
+    if (!initialized) return;
+
     const runs = messages
       .filter((m) => m.role === "assistant" && m.meta)
       .map((m) => ({
@@ -138,11 +170,11 @@ const ChatPage: React.FC = () => {
       }));
 
     try {
-      sessionStorage.setItem("rag_run_history", JSON.stringify(runs));
+      sessionStorage.setItem(RUN_HISTORY_KEY, JSON.stringify(runs));
     } catch {
       // ignore if sessionStorage is unavailable
     }
-  }, [messages]);
+  }, [messages, initialized]);
 
   async function handleSend(e: FormEvent) {
     e.preventDefault();
@@ -211,6 +243,22 @@ const ChatPage: React.FC = () => {
     }
   }
 
+  function clearChat() {
+    const ok = confirm("Clear chat and reset run history for this session?");
+    if (!ok) return;
+
+    setMessages([]);
+    setPinnedEvidenceId(null);
+    setHoveredEvidenceId(null);
+
+    try {
+      sessionStorage.removeItem(CHAT_STORAGE_KEY);
+      sessionStorage.removeItem(RUN_HISTORY_KEY);
+    } catch {
+      // ignore
+    }
+  }
+
   function formatTrust(score: number | null | undefined) {
     if (score == null) return "-";
     return `${Math.round(score)}%`;
@@ -261,6 +309,15 @@ const ChatPage: React.FC = () => {
               chunks.
             </p>
           </div>
+
+          {/* Clear chat button */}
+          <button
+            type="button"
+            onClick={clearChat}
+            className="text-[11px] px-3 py-1.5 rounded-full border border-slate-200 text-textMuted hover:text-primary hover:border-primary/60 hover:bg-primary/5 transition"
+          >
+            Clear chat
+          </button>
         </div>
 
         {/* Chat container */}

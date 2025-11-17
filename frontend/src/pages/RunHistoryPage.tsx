@@ -18,6 +18,8 @@ type RunRecord = {
   created_at: number;
 };
 
+const RUN_HISTORY_KEY = "rag_run_history";
+
 /** Simple status icon based on relevance mix. */
 function runStatusIcon(chunks: ChunkMeta[]): { icon: string; label: string } {
   if (!chunks.length) return { icon: "⚪", label: "No evidence" };
@@ -46,7 +48,7 @@ const RunHistoryPage: React.FC = () => {
 
   useEffect(() => {
     try {
-      const raw = sessionStorage.getItem("rag_run_history");
+      const raw = sessionStorage.getItem(RUN_HISTORY_KEY);
       if (!raw) return;
       const parsed: RunRecord[] = JSON.parse(raw);
       setRuns(parsed);
@@ -65,6 +67,18 @@ const RunHistoryPage: React.FC = () => {
         )
       : null;
 
+  function clearHistory() {
+    const ok = confirm("Clear all run history for this session?");
+    if (!ok) return;
+
+    setRuns([]);
+    try {
+      sessionStorage.removeItem(RUN_HISTORY_KEY);
+    } catch {
+      // ignore
+    }
+  }
+
   return (
     <main className="min-h-[calc(100vh-64px)] bg-bg px-8 py-6">
       <div className="max-w-5xl mx-auto">
@@ -76,6 +90,16 @@ const RunHistoryPage: React.FC = () => {
               retrieval settings.
             </p>
           </div>
+
+          {runs.length > 0 && (
+            <button
+              type="button"
+              onClick={clearHistory}
+              className="text-[11px] px-3 py-1.5 rounded-full border border-slate-200 text-textMuted hover:text-primary hover:border-primary/60 hover:bg-primary/5 transition"
+            >
+              Clear history
+            </button>
+          )}
         </header>
 
         {/* Summary cards */}
