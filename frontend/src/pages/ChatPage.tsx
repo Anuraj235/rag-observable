@@ -1,6 +1,19 @@
 import React, { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 
+/** Remove any trailing “Sources:” block from the model answer text. */
+function stripSourcesFromAnswer(text: string): string {
+  if (!text) return text;
+
+  const lower = text.toLowerCase();
+  const idx = lower.indexOf("sources:");
+  if (idx === -1) {
+    return text.trim();
+  }
+
+  return text.slice(0, idx).trimEnd();
+}
+
 type Role = "user" | "assistant";
 
 type ChunkMeta = {
@@ -43,6 +56,7 @@ const ChatPage: React.FC = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [topK, setTopK] = useState<number>(3); // 🔹 Top-k slider state
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -75,7 +89,8 @@ const ChatPage: React.FC = () => {
       const res = await fetch(`${API_BASE}/api/query`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: trimmed }),
+        // 🔹 Send top_k to backend
+        body: JSON.stringify({ query: trimmed, top_k: topK }),
       });
 
       if (!res.ok) {
@@ -84,10 +99,13 @@ const ChatPage: React.FC = () => {
 
       const data: QueryResponse = await res.json();
 
+      // 🔹 Strip inline “Sources:” section from the LLM answer text
+      const cleanedAnswer = stripSourcesFromAnswer(data.answer);
+
       const assistantMessage: Message = {
         id: crypto.randomUUID(),
         role: "assistant",
-        content: data.answer,
+        content: cleanedAnswer,
         meta: {
           trust_score: data.trust_score ?? null,
           latency_ms: data.latency_ms ?? null,
@@ -183,25 +201,62 @@ const ChatPage: React.FC = () => {
               </div>
             )}
 
-            {messages.map((m) => (
-              <div
-                key={m.id}
-                className={`flex ${
-                  m.role === "user" ? "justify-end" : "justify-start"
-                }`}
-              >
+            {messages.map((m) => {
+              const isAssistant = m.role === "assistant";
+              const chunks = m.meta?.chunks ?? [];
+
+              // de-dupe sources for the source pills
+              const uniqueChunks = Array.from(
+                new Map(
+                  chunks.map((c) => [`${c.source}-${c.chunk}`, c])
+                ).values()
+              );
+
+              return (
                 <div
-                  className={[
-                    "max-w-[70%] rounded-2xl px-4 py-3 text-sm shadow-soft-sm",
-                    m.role === "user"
-                      ? "bg-primary text-white rounded-br-md"
-                      : "bg-slate-50 text-textDark border border-slate-200 rounded-bl-md",
-                  ].join(" ")}
+                  key={m.id}
+                  className={`flex ${isAssistant ? "justify-start" : "justify-end"}`}
                 >
-                  {m.content}
+                  <div
+                    className={[
+                      "max-w-[70%] rounded-2xl px-4 py-3 text-sm shadow-soft-sm",
+                      isAssistant
+                        ? "bg-slate-50 text-textDark border border-slate-200 rounded-bl-md"
+                        : "bg-primary text-white rounded-br-md",
+                    ].join(" ")}
+                  >
+                    <p className="whitespace-pre-line">{m.content}</p>
+
+                    {/* 🔹 Source pills directly under assistant message */}
+                    {isAssistant && uniqueChunks.length > 0 && (
+                      <div className="mt-3 border-t border-slate-200 pt-2">
+                        <div className="mb-1 text-[11px] font-medium text-textMuted">
+                          Sources
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {uniqueChunks.map((c, idx) => (
+                            <span
+                              key={`${c.source}-${c.chunk}-${idx}`}
+                              className={[
+                                "inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] max-w-[220px] truncate",
+                                relevanceBadgeClass(c.relevance),
+                              ].join(" ")}
+                            >
+                              <span className="mr-1 text-[10px] opacity-80">
+                                [{idx + 1}]
+                              </span>
+                              <span className="truncate">
+                                {c.source} · chunk {c.chunk}
+                              </span>
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
 
             {loading && (
               <div className="flex items-center gap-2 text-xs text-textMuted">
@@ -241,6 +296,52 @@ const ChatPage: React.FC = () => {
           <p className="mt-1 text-xs text-textMuted">
             Trust score and retrieved chunk details for the latest answer.
           </p>
+
+          {/* 🔹 Top-k slider */}
+          <div className="mt-4">
+            <label className="flex items-center justify-between text-xs font-medium text-textDark">
+              <span>Top-k chunks</span>
+              <span className="text-textMuted">k = {topK}</span>
+            </label>
+            <input
+              type="range"
+              min={1}
+              max={8}
+              value={topK}
+              onChange={(e) => setTopK(Number(e.target.value))}
+              className="mt-2 w-full"
+            />
+            <p className="mt-1 text-[11px] text-textMuted">
+              Controls how many chunks the retriever returns for each answer.
+            </p>
+          </div>
+
+          {/* Rebuild index button */}
+<div className="mt-4">
+  <button
+    onClick={async () => {
+      const ok = confirm("Rebuild entire index? This will re-embed all files.");
+      if (!ok) return;
+
+      try {
+        const res = await fetch(`${API_BASE}/api/rebuild`, {
+          method: "POST",
+        });
+
+        if (!res.ok) throw new Error("Failed to rebuild index");
+
+        alert("Index rebuilt successfully! 🎉");
+      } catch (err) {
+        console.error(err);
+        alert("Error rebuilding index. Check backend.");
+      }
+    }}
+    className="text-xs px-3 py-2 rounded-full border border-primary text-primary hover:bg-primary hover:text-white transition"
+  >
+    Rebuild Index
+  </button>
+</div>
+
 
           {lastMeta ? (
             <>
