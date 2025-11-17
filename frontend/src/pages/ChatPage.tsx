@@ -111,12 +111,12 @@ const ChatPage: React.FC = () => {
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
-  // Scroll to bottom when messages change
+  // ✅ Scroll the inner messages panel when messages length changes
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [messages]);
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [messages.length]);
 
   const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
   const lastMeta = lastAssistant?.meta;
@@ -224,9 +224,10 @@ const ChatPage: React.FC = () => {
   }
 
   return (
-    <main className="min-h-[calc(100vh-64px)] bg-bg px-8 py-6 flex gap-6">
+    // 🔒 Lock whole layout to viewport height (minus navbar) and prevent page scroll
+    <main className="h-[calc(100vh-64px)] bg-bg px-8 py-6 flex gap-6 overflow-hidden">
       {/* LEFT: Chat assistant */}
-      <section className="flex-1 flex flex-col">
+      <section className="flex-1 flex flex-col min-h-0">
         {/* Header */}
         <div className="flex items-baseline justify-between">
           <div>
@@ -239,11 +240,11 @@ const ChatPage: React.FC = () => {
         </div>
 
         {/* Chat container */}
-        <div className="mt-4 flex-1 rounded-3xl bg-white shadow-soft border border-indigo-50 flex flex-col">
+        <div className="mt-4 flex-1 min-h-0 rounded-3xl bg-white shadow-soft border border-indigo-50 flex flex-col">
           {/* Messages */}
           <div
             ref={scrollRef}
-            className="flex-1 px-6 pt-6 pb-3 overflow-y-auto space-y-4"
+            className="flex-1 min-h-0 px-6 pt-6 pb-3 overflow-y-auto space-y-4"
           >
             {messages.length === 0 && !loading && (
               <div className="rounded-2xl bg-indigo-50/60 border border-dashed border-indigo-200 px-4 py-3 text-xs text-textMuted">
@@ -385,7 +386,9 @@ const ChatPage: React.FC = () => {
                                   : "-"}
                               </span>
                               {pinnedEvidenceId ===
-                                `${baseIdPrefix}-${activeEvidenceChunk.source}-${activeEvidenceChunk.chunk}` && (
+                                `${baseIdPrefix}-${activeEvidenceChunk.source}-${
+                                  activeEvidenceChunk.chunk
+                                }` && (
                                 <button
                                   type="button"
                                   onClick={() => setPinnedEvidenceId(null)}
@@ -437,7 +440,7 @@ const ChatPage: React.FC = () => {
 
       {/* RIGHT: Trust / chunk panel */}
       <aside className="w-[320px] shrink-0">
-        <div className="rounded-3xl bg-white shadow-soft border border-indigo-50 p-5">
+        <div className="h-full rounded-3xl bg-white shadow-soft border border-indigo-50 p-5 flex flex-col">
           <h2 className="text-sm font-semibold text-textDark">Trust Insights</h2>
           <p className="mt-1 text-xs text-textMuted">
             Trust score and retrieved chunk details for the latest answer.
@@ -584,7 +587,7 @@ const ChatPage: React.FC = () => {
               </div>
 
               {/* Chunk list */}
-              <div className="mt-5">
+              <div className="mt-5 overflow-y-auto pr-1">
                 <h3 className="text-xs font-semibold text-textDark">
                   Retrieved chunks
                 </h3>
