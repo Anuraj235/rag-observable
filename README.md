@@ -188,27 +188,6 @@ Mini distance bars
 
 One-click rebuild of all embeddings via /api/rebuild.
 
-📚 Folder Structure
-project/
-│
-├── backend/
-│   ├── app.py
-│   ├── rag_pipeline.py
-│   ├── metrics.py
-│   ├── chunk_utils.py
-│   ├── embedder.py
-│   ├── data/
-│   └── requirements.txt
-│
-├── frontend/
-│   ├── src/
-│   │   ├── pages/ChatPage.tsx
-│   │   └── main.tsx
-│   ├── public/
-│   ├── tailwind.config.js
-│   └── package.json
-│
-└── README.md
 
 Future Improvements
 
