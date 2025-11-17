@@ -1,3 +1,0 @@
-This project explores retrieval-augmented generation (RAG).
-It combines document embeddings with a large language model.
-The system retrieves context from ChromaDB and uses GPT-4 to generate grounded answers.
