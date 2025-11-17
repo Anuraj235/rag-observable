@@ -14,6 +14,41 @@ function stripSourcesFromAnswer(text: string): string {
   return text.slice(0, idx).trimEnd();
 }
 
+/** Escape regex special chars in a query word. */
+function escapeRegExp(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Highlight query words inside a chunk of text using <mark>.
+ * We keep it simple: split query into words, ignore very short ones,
+ * and wrap matches in a yellow highlight span.
+ */
+function highlightText(text: string, query: string): string {
+  if (!text || !query) return text;
+
+  const words = Array.from(
+    new Set(
+      query
+        .split(/\s+/)
+        .map((w) => w.trim())
+        .filter((w) => w.length > 2)
+    )
+  );
+
+  if (words.length === 0) return text;
+
+  let result = text;
+  for (const word of words) {
+    const re = new RegExp(`(${escapeRegExp(word)})`, "gi");
+    result = result.replace(
+      re,
+      `<mark class="bg-yellow-100 rounded px-0.5">$1</mark>`
+    );
+  }
+  return result;
+}
+
 type Role = "user" | "assistant";
 
 type ChunkMeta = {
@@ -28,6 +63,8 @@ type MessageMeta = {
   trust_score: number | null;
   latency_ms: number | null;
   chunks: ChunkMeta[];
+  /** Original question that produced this answer (for highlighting). */
+  question?: string;
 };
 
 type Message = {
@@ -55,6 +92,7 @@ const API_BASE = "http://localhost:8000";
 /** Convert distance (smaller = better) to a bar width percentage. */
 function distanceWidth(distance: number | null): string {
   if (distance == null) return "0%";
+  // Clamp into [0, 1] and treat 0 as best (100% filled), 1 as worst (0%).
   const d = Math.max(0, Math.min(1, distance));
   const closeness = 1 - d;
   return `${Math.round(closeness * 100)}%`;
@@ -66,6 +104,10 @@ const ChatPage: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [topK, setTopK] = useState<number>(3);
   const [showOffTopic, setShowOffTopic] = useState<boolean>(true);
+
+  // For hover + click evidence previews on source pills
+  const [hoveredEvidenceId, setHoveredEvidenceId] = useState<string | null>(null);
+  const [pinnedEvidenceId, setPinnedEvidenceId] = useState<string | null>(null);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -116,6 +158,7 @@ const ChatPage: React.FC = () => {
         meta: {
           trust_score: data.trust_score ?? null,
           latency_ms: data.latency_ms ?? null,
+          question: trimmed,
           chunks: (data.chunks ?? []).map((c) => ({
             source: c.source,
             chunk: c.chunk,
@@ -127,6 +170,9 @@ const ChatPage: React.FC = () => {
       };
 
       setMessages((prev) => [...prev, assistantMessage]);
+      // Clear any previously pinned evidence when a new answer arrives
+      setPinnedEvidenceId(null);
+      setHoveredEvidenceId(null);
     } catch (err) {
       console.error(err);
       const errorMessage: Message = {
@@ -178,9 +224,9 @@ const ChatPage: React.FC = () => {
   }
 
   return (
-    <main className="h-[calc(100vh-64px)] bg-bg px-8 py-6 flex gap-6 overflow-hidden">
+    <main className="min-h-[calc(100vh-64px)] bg-bg px-8 py-6 flex gap-6">
       {/* LEFT: Chat assistant */}
-      <section className="flex-1 flex flex-col h-full overflow-hidden">
+      <section className="flex-1 flex flex-col">
         {/* Header */}
         <div className="flex items-baseline justify-between">
           <div>
@@ -193,7 +239,7 @@ const ChatPage: React.FC = () => {
         </div>
 
         {/* Chat container */}
-        <div className="mt-4 flex-1 rounded-3xl bg-white shadow-soft border border-indigo-50 flex flex-col overflow-hidden">
+        <div className="mt-4 flex-1 rounded-3xl bg-white shadow-soft border border-indigo-50 flex flex-col">
           {/* Messages */}
           <div
             ref={scrollRef}
@@ -212,15 +258,27 @@ const ChatPage: React.FC = () => {
               const isAssistant = m.role === "assistant";
               const allChunks = m.meta?.chunks ?? [];
 
-              const chunksForDisplay = showOffTopic
-                ? allChunks
-                : allChunks.filter((c) => c.relevance !== "Off-topic");
+              // For source pills & evidence, only use Related / Somewhat related chunks
+              const evidenceChunks = allChunks.filter(
+                (c) =>
+                  c.relevance === "Related" || c.relevance === "Somewhat related"
+              );
 
+              // de-dupe by source + chunk index
               const uniqueChunks = Array.from(
                 new Map(
-                  chunksForDisplay.map((c) => [`${c.source}-${c.chunk}`, c])
+                  evidenceChunks.map((c) => [`${c.source}-${c.chunk}`, c])
                 ).values()
               );
+
+              // Determine which evidence (if any) is active for THIS message
+              const baseIdPrefix = m.id;
+              const effectiveEvidenceId = pinnedEvidenceId ?? hoveredEvidenceId;
+              const activeEvidenceChunk =
+                uniqueChunks.find(
+                  (c) =>
+                    `${baseIdPrefix}-${c.source}-${c.chunk}` === effectiveEvidenceId
+                ) || null;
 
               return (
                 <div
@@ -237,30 +295,108 @@ const ChatPage: React.FC = () => {
                   >
                     <p className="whitespace-pre-line">{m.content}</p>
 
-                    {/* Source pills directly under assistant message */}
+                    {/* Source pills + evidence preview for assistant messages */}
                     {isAssistant && uniqueChunks.length > 0 && (
                       <div className="mt-3 border-t border-slate-200 pt-2">
                         <div className="mb-1 text-[11px] font-medium text-textMuted">
                           Sources
                         </div>
                         <div className="flex flex-wrap gap-1.5">
-                          {uniqueChunks.map((c, idx) => (
-                            <span
-                              key={`${c.source}-${c.chunk}-${idx}`}
-                              className={[
-                                "inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] max-w-[220px] truncate",
-                                relevanceBadgeClass(c.relevance),
-                              ].join(" ")}
-                            >
-                              <span className="mr-1 text-[10px] opacity-80">
-                                [{idx + 1}]
-                              </span>
-                              <span className="truncate">
-                                {c.source} · chunk {c.chunk}
-                              </span>
-                            </span>
-                          ))}
+                          {uniqueChunks.map((c, idx) => {
+                            const chunkId = `${baseIdPrefix}-${c.source}-${c.chunk}`;
+                            const isPinned = pinnedEvidenceId === chunkId;
+
+                            return (
+                              <button
+                                key={`${c.source}-${c.chunk}-${idx}`}
+                                type="button"
+                                onMouseEnter={() => {
+                                  if (!isPinned) {
+                                    setHoveredEvidenceId(chunkId);
+                                  }
+                                }}
+                                onMouseLeave={() => {
+                                  if (!isPinned) {
+                                    setHoveredEvidenceId((current) =>
+                                      current === chunkId ? null : current
+                                    );
+                                  }
+                                }}
+                                onClick={() => {
+                                  setPinnedEvidenceId((current) =>
+                                    current === chunkId ? null : chunkId
+                                  );
+                                  // Also ensure hovered state matches the new pinned one
+                                  setHoveredEvidenceId((current) =>
+                                    current === chunkId ? current : null
+                                  );
+                                }}
+                                className={[
+                                  "inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] max-w-[220px] truncate transition",
+                                  relevanceBadgeClass(c.relevance),
+                                  isPinned ? "ring-1 ring-primary/60" : "",
+                                ].join(" ")}
+                                title="Click to pin evidence"
+                              >
+                                <span className="mr-1 text-[10px] opacity-80">
+                                  [{idx + 1}]
+                                </span>
+                                <span className="truncate">
+                                  {c.source} · chunk {c.chunk}
+                                </span>
+                              </button>
+                            );
+                          })}
                         </div>
+
+                        {/* Evidence preview card (hover or pinned) */}
+                        {activeEvidenceChunk && (
+                          <div className="mt-3 rounded-2xl border border-slate-200 bg-white/90 px-3 py-2 text-[11px] text-textMuted shadow-soft-sm">
+                            <div className="flex items-center justify-between mb-1">
+                              <div className="font-medium text-textDark truncate">
+                                {activeEvidenceChunk.source} · chunk{" "}
+                                {activeEvidenceChunk.chunk}
+                              </div>
+                              <span
+                                className={[
+                                  "inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium",
+                                  relevanceBadgeClass(
+                                    activeEvidenceChunk.relevance
+                                  ),
+                                ].join(" ")}
+                              >
+                                {relevanceLabel(activeEvidenceChunk.relevance)}
+                              </span>
+                            </div>
+                            <div
+                              className="mt-1 max-h-40 overflow-y-auto leading-relaxed"
+                              dangerouslySetInnerHTML={{
+                                __html: highlightText(
+                                  activeEvidenceChunk.text,
+                                  m.meta?.question ?? ""
+                                ),
+                              }}
+                            />
+                            <div className="mt-1 flex items-center justify-between text-[10px] text-slate-400">
+                              <span>
+                                dist{" "}
+                                {activeEvidenceChunk.distance != null
+                                  ? activeEvidenceChunk.distance.toFixed(3)
+                                  : "-"}
+                              </span>
+                              {pinnedEvidenceId ===
+                                `${baseIdPrefix}-${activeEvidenceChunk.source}-${activeEvidenceChunk.chunk}` && (
+                                <button
+                                  type="button"
+                                  onClick={() => setPinnedEvidenceId(null)}
+                                  className="text-[10px] text-primary hover:underline"
+                                >
+                                  Unpin
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -276,7 +412,7 @@ const ChatPage: React.FC = () => {
             )}
           </div>
 
-          {/* Input (fixed at bottom of chat panel) */}
+          {/* Input */}
           <form
             onSubmit={handleSend}
             className="border-t border-slate-100 px-6 py-4 flex items-center gap-3"
@@ -300,8 +436,8 @@ const ChatPage: React.FC = () => {
       </section>
 
       {/* RIGHT: Trust / chunk panel */}
-      <aside className="w-[320px] shrink-0 h-full">
-        <div className="h-full rounded-3xl bg-white shadow-soft border border-indigo-50 p-5 flex flex-col">
+      <aside className="w-[320px] shrink-0">
+        <div className="rounded-3xl bg-white shadow-soft border border-indigo-50 p-5">
           <h2 className="text-sm font-semibold text-textDark">Trust Insights</h2>
           <p className="mt-1 text-xs text-textMuted">
             Trust score and retrieved chunk details for the latest answer.
@@ -354,11 +490,11 @@ const ChatPage: React.FC = () => {
             </button>
           </div>
 
-          {/* Scrollable metrics + chunks area */}
+          {/* Only show metrics + legend when we have a last answer */}
           {lastMeta ? (
-            <div className="mt-4 flex-1 overflow-y-auto pr-1">
+            <>
               {/* Trust ring + stats */}
-              <div className="flex items-center gap-4">
+              <div className="mt-4 flex items-center gap-4">
                 <div className="relative h-20 w-20">
                   <div className="absolute inset-0 rounded-full bg-indigo-50" />
                   <div className="absolute inset-1 rounded-full bg-white flex items-center justify-center shadow-inner">
@@ -455,7 +591,9 @@ const ChatPage: React.FC = () => {
                 <ul className="mt-2 space-y-2.5 text-xs">
                   {(showOffTopic
                     ? lastMeta.chunks
-                    : lastMeta.chunks.filter((c) => c.relevance !== "Off-topic")
+                    : lastMeta.chunks.filter(
+                        (c) => c.relevance !== "Off-topic"
+                      )
                   ).map((c, i) => (
                     <li
                       key={`${c.source}-${c.chunk}-${i}`}
@@ -483,6 +621,7 @@ const ChatPage: React.FC = () => {
                           {c.distance != null ? c.distance.toFixed(3) : "-"}
                         </span>
                       </div>
+                      {/* Mini distance bar */}
                       <div className="mt-1 h-1.5 w-full rounded-full bg-slate-100 overflow-hidden">
                         <div
                           className="h-full rounded-full bg-primary/60"
@@ -499,9 +638,9 @@ const ChatPage: React.FC = () => {
                   )}
                 </ul>
               </div>
-            </div>
+            </>
           ) : (
-            <div className="mt-5 flex-1 rounded-2xl bg-slate-50 px-3 py-3 text-[11px] text-textMuted">
+            <div className="mt-5 rounded-2xl bg-slate-50 px-3 py-3 text-[11px] text-textMuted">
               Ask a question to see trust score and retrieved chunk details here.
             </div>
           )}
