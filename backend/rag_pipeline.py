@@ -1,4 +1,4 @@
-import os
+﻿import os
 import glob
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
@@ -118,18 +118,29 @@ class RAGPipeline:
     def _build_index(self) -> None:
         """
         Build the Chroma collection from scratch from files in data_dir.
+
+        IMPORTANT: Chunks are now numbered *globally* across all files
+        so chunk ids are unique (0..N-1) instead of restarting at 0 per file.
         """
         docs: List[str] = []
         ids: List[str] = []
         metas: List[Dict] = []
 
+        global_chunk_idx: int = 0  # 🔹 global counter for chunk numbers
+
         for path in self._iter_source_files():
             text = self._read_file(path)
             base = os.path.basename(path)
-            for i, chunk in enumerate(self._chunk(text)):
-                docs.append(chunk)
-                ids.append(f"{base}::{i}")
-                metas.append({"source": base, "chunk": i})
+
+            for chunk_text in self._chunk(text):
+                docs.append(chunk_text)
+                # Use global chunk index in both id and metadata
+                ids.append(f"{base}::{global_chunk_idx}")
+                metas.append({
+                    "source": base,
+                    "chunk": global_chunk_idx,
+                })
+                global_chunk_idx += 1
 
         if docs:
             self.collection.add(documents=docs, metadatas=metas, ids=ids)
