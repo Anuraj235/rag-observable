@@ -55,7 +55,6 @@ const API_BASE = "http://localhost:8000";
 /** Convert distance (smaller = better) to a bar width percentage. */
 function distanceWidth(distance: number | null): string {
   if (distance == null) return "0%";
-  // Clamp into [0, 1] and treat 0 as best (100% filled), 1 as worst (0%).
   const d = Math.max(0, Math.min(1, distance));
   const closeness = 1 - d;
   return `${Math.round(closeness * 100)}%`;
@@ -179,9 +178,9 @@ const ChatPage: React.FC = () => {
   }
 
   return (
-    <main className="min-h-[calc(100vh-64px)] bg-bg px-8 py-6 flex gap-6">
+    <main className="h-[calc(100vh-64px)] bg-bg px-8 py-6 flex gap-6 overflow-hidden">
       {/* LEFT: Chat assistant */}
-      <section className="flex-1 flex flex-col">
+      <section className="flex-1 flex flex-col h-full overflow-hidden">
         {/* Header */}
         <div className="flex items-baseline justify-between">
           <div>
@@ -194,7 +193,7 @@ const ChatPage: React.FC = () => {
         </div>
 
         {/* Chat container */}
-        <div className="mt-4 flex-1 rounded-3xl bg-white shadow-soft border border-indigo-50 flex flex-col">
+        <div className="mt-4 flex-1 rounded-3xl bg-white shadow-soft border border-indigo-50 flex flex-col overflow-hidden">
           {/* Messages */}
           <div
             ref={scrollRef}
@@ -217,7 +216,6 @@ const ChatPage: React.FC = () => {
                 ? allChunks
                 : allChunks.filter((c) => c.relevance !== "Off-topic");
 
-              // de-dupe sources for the source pills
               const uniqueChunks = Array.from(
                 new Map(
                   chunksForDisplay.map((c) => [`${c.source}-${c.chunk}`, c])
@@ -278,7 +276,7 @@ const ChatPage: React.FC = () => {
             )}
           </div>
 
-          {/* Input */}
+          {/* Input (fixed at bottom of chat panel) */}
           <form
             onSubmit={handleSend}
             className="border-t border-slate-100 px-6 py-4 flex items-center gap-3"
@@ -302,8 +300,8 @@ const ChatPage: React.FC = () => {
       </section>
 
       {/* RIGHT: Trust / chunk panel */}
-      <aside className="w-[320px] shrink-0">
-        <div className="rounded-3xl bg-white shadow-soft border border-indigo-50 p-5">
+      <aside className="w-[320px] shrink-0 h-full">
+        <div className="h-full rounded-3xl bg-white shadow-soft border border-indigo-50 p-5 flex flex-col">
           <h2 className="text-sm font-semibold text-textDark">Trust Insights</h2>
           <p className="mt-1 text-xs text-textMuted">
             Trust score and retrieved chunk details for the latest answer.
@@ -356,11 +354,11 @@ const ChatPage: React.FC = () => {
             </button>
           </div>
 
-          {/* Only show metrics + legend when we have a last answer */}
+          {/* Scrollable metrics + chunks area */}
           {lastMeta ? (
-            <>
+            <div className="mt-4 flex-1 overflow-y-auto pr-1">
               {/* Trust ring + stats */}
-              <div className="mt-4 flex items-center gap-4">
+              <div className="flex items-center gap-4">
                 <div className="relative h-20 w-20">
                   <div className="absolute inset-0 rounded-full bg-indigo-50" />
                   <div className="absolute inset-1 rounded-full bg-white flex items-center justify-center shadow-inner">
@@ -485,7 +483,6 @@ const ChatPage: React.FC = () => {
                           {c.distance != null ? c.distance.toFixed(3) : "-"}
                         </span>
                       </div>
-                      {/* Mini distance bar */}
                       <div className="mt-1 h-1.5 w-full rounded-full bg-slate-100 overflow-hidden">
                         <div
                           className="h-full rounded-full bg-primary/60"
@@ -502,9 +499,9 @@ const ChatPage: React.FC = () => {
                   )}
                 </ul>
               </div>
-            </>
+            </div>
           ) : (
-            <div className="mt-5 rounded-2xl bg-slate-50 px-3 py-3 text-[11px] text-textMuted">
+            <div className="mt-5 flex-1 rounded-2xl bg-slate-50 px-3 py-3 text-[11px] text-textMuted">
               Ask a question to see trust score and retrieved chunk details here.
             </div>
           )}
