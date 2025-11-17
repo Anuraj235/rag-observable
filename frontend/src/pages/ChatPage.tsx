@@ -52,11 +52,21 @@ type QueryResponse = {
 
 const API_BASE = "http://localhost:8000";
 
+/** Convert distance (smaller = better) to a bar width percentage. */
+function distanceWidth(distance: number | null): string {
+  if (distance == null) return "0%";
+  // Clamp into [0, 1] and treat 0 as best (100% filled), 1 as worst (0%).
+  const d = Math.max(0, Math.min(1, distance));
+  const closeness = 1 - d;
+  return `${Math.round(closeness * 100)}%`;
+}
+
 const ChatPage: React.FC = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [topK, setTopK] = useState<number>(3); // 🔹 Top-k slider state
+  const [topK, setTopK] = useState<number>(3);
+  const [showOffTopic, setShowOffTopic] = useState<boolean>(true);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -89,7 +99,6 @@ const ChatPage: React.FC = () => {
       const res = await fetch(`${API_BASE}/api/query`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        // 🔹 Send top_k to backend
         body: JSON.stringify({ query: trimmed, top_k: topK }),
       });
 
@@ -99,7 +108,6 @@ const ChatPage: React.FC = () => {
 
       const data: QueryResponse = await res.json();
 
-      // 🔹 Strip inline “Sources:” section from the LLM answer text
       const cleanedAnswer = stripSourcesFromAnswer(data.answer);
 
       const assistantMessage: Message = {
@@ -203,12 +211,16 @@ const ChatPage: React.FC = () => {
 
             {messages.map((m) => {
               const isAssistant = m.role === "assistant";
-              const chunks = m.meta?.chunks ?? [];
+              const allChunks = m.meta?.chunks ?? [];
+
+              const chunksForDisplay = showOffTopic
+                ? allChunks
+                : allChunks.filter((c) => c.relevance !== "Off-topic");
 
               // de-dupe sources for the source pills
               const uniqueChunks = Array.from(
                 new Map(
-                  chunks.map((c) => [`${c.source}-${c.chunk}`, c])
+                  chunksForDisplay.map((c) => [`${c.source}-${c.chunk}`, c])
                 ).values()
               );
 
@@ -227,7 +239,7 @@ const ChatPage: React.FC = () => {
                   >
                     <p className="whitespace-pre-line">{m.content}</p>
 
-                    {/* 🔹 Source pills directly under assistant message */}
+                    {/* Source pills directly under assistant message */}
                     {isAssistant && uniqueChunks.length > 0 && (
                       <div className="mt-3 border-t border-slate-200 pt-2">
                         <div className="mb-1 text-[11px] font-medium text-textMuted">
@@ -297,7 +309,7 @@ const ChatPage: React.FC = () => {
             Trust score and retrieved chunk details for the latest answer.
           </p>
 
-          {/* 🔹 Top-k slider */}
+          {/* Top-k slider */}
           <div className="mt-4">
             <label className="flex items-center justify-between text-xs font-medium text-textDark">
               <span>Top-k chunks</span>
@@ -317,32 +329,34 @@ const ChatPage: React.FC = () => {
           </div>
 
           {/* Rebuild index button */}
-<div className="mt-4">
-  <button
-    onClick={async () => {
-      const ok = confirm("Rebuild entire index? This will re-embed all files.");
-      if (!ok) return;
+          <div className="mt-4">
+            <button
+              onClick={async () => {
+                const ok = confirm(
+                  "Rebuild entire index? This will re-embed all files."
+                );
+                if (!ok) return;
 
-      try {
-        const res = await fetch(`${API_BASE}/api/rebuild`, {
-          method: "POST",
-        });
+                try {
+                  const res = await fetch(`${API_BASE}/api/rebuild`, {
+                    method: "POST",
+                  });
 
-        if (!res.ok) throw new Error("Failed to rebuild index");
+                  if (!res.ok) throw new Error("Failed to rebuild index");
 
-        alert("Index rebuilt successfully! 🎉");
-      } catch (err) {
-        console.error(err);
-        alert("Error rebuilding index. Check backend.");
-      }
-    }}
-    className="text-xs px-3 py-2 rounded-full border border-primary text-primary hover:bg-primary hover:text-white transition"
-  >
-    Rebuild Index
-  </button>
-</div>
+                  alert("Index rebuilt successfully! 🎉");
+                } catch (err) {
+                  console.error(err);
+                  alert("Error rebuilding index. Check backend logs.");
+                }
+              }}
+              className="text-xs px-3 py-2 rounded-full border border-primary text-primary hover:bg-primary hover:text-white transition"
+            >
+              Rebuild Index
+            </button>
+          </div>
 
-
+          {/* Only show metrics + legend when we have a last answer */}
           {lastMeta ? (
             <>
               {/* Trust ring + stats */}
@@ -375,13 +389,76 @@ const ChatPage: React.FC = () => {
                 </div>
               </div>
 
+              {/* Relevance legend + toggle */}
+              <div className="mt-4 border-t border-slate-100 pt-3">
+                <div className="flex items-center justify-between text-[11px] font-medium text-textDark">
+                  <span>Relevance breakdown</span>
+                  <label className="flex items-center gap-1 text-[11px] text-textMuted cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={showOffTopic}
+                      onChange={(e) => setShowOffTopic(e.target.checked)}
+                      className="h-3 w-3 rounded border-slate-300"
+                    />
+                    <span>Show off-topic</span>
+                  </label>
+                </div>
+
+                {(() => {
+                  const relatedCount = lastMeta.chunks.filter(
+                    (c) => c.relevance === "Related"
+                  ).length;
+                  const somewhatCount = lastMeta.chunks.filter(
+                    (c) => c.relevance === "Somewhat related"
+                  ).length;
+                  const offTopicCount = lastMeta.chunks.filter(
+                    (c) => c.relevance === "Off-topic"
+                  ).length;
+
+                  return (
+                    <div className="mt-2 space-y-1.5 text-[11px]">
+                      <div className="flex items-center justify-between">
+                        <span className="inline-flex items-center gap-1 text-textMuted">
+                          <span className="h-2 w-2 rounded-full bg-emerald-500" />
+                          Related
+                        </span>
+                        <span className="font-medium text-textDark">
+                          {relatedCount}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="inline-flex items-center gap-1 text-textMuted">
+                          <span className="h-2 w-2 rounded-full bg-sky-500" />
+                          Somewhat related
+                        </span>
+                        <span className="font-medium text-textDark">
+                          {somewhatCount}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="inline-flex items-center gap-1 text-textMuted">
+                          <span className="h-2 w-2 rounded-full bg-rose-500" />
+                          Off-topic
+                        </span>
+                        <span className="font-medium text-textDark">
+                          {offTopicCount}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+
               {/* Chunk list */}
               <div className="mt-5">
                 <h3 className="text-xs font-semibold text-textDark">
                   Retrieved chunks
                 </h3>
                 <ul className="mt-2 space-y-2.5 text-xs">
-                  {lastMeta.chunks.map((c, i) => (
+                  {(showOffTopic
+                    ? lastMeta.chunks
+                    : lastMeta.chunks.filter((c) => c.relevance !== "Off-topic")
+                  ).map((c, i) => (
                     <li
                       key={`${c.source}-${c.chunk}-${i}`}
                       className="rounded-2xl border border-slate-100 bg-slate-50/80 px-3 py-2"
@@ -407,6 +484,13 @@ const ChatPage: React.FC = () => {
                           dist{" "}
                           {c.distance != null ? c.distance.toFixed(3) : "-"}
                         </span>
+                      </div>
+                      {/* Mini distance bar */}
+                      <div className="mt-1 h-1.5 w-full rounded-full bg-slate-100 overflow-hidden">
+                        <div
+                          className="h-full rounded-full bg-primary/60"
+                          style={{ width: distanceWidth(c.distance) }}
+                        />
                       </div>
                     </li>
                   ))}
