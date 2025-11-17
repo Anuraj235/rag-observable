@@ -82,6 +82,12 @@ def relevance_label(distance: Optional[float]) -> str:
 def health():
     return {"status": "ok"}
 
+@app.post("/api/rebuild")
+def rebuild_index():
+    pipeline.rebuild_index()
+    return {"status": "ok", "message": "Index rebuilt successfully."}
+
+
 
 @app.post("/api/query", response_model=QueryResponse)
 def query_rag(payload: QueryRequest):
