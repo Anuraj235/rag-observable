@@ -379,7 +379,14 @@ const ChatPage: React.FC = () => {
 
                     {/* Source pills + evidence preview for assistant messages */}
                     {isAssistant && uniqueChunks.length > 0 && (
-                      <div className="mt-3 border-t border-slate-200 pt-2">
+                      // wrapper handles mouse leave for whole sources area
+                      <div
+                        className="mt-3 border-t border-slate-200 pt-2"
+                        onMouseLeave={() => {
+                          // Only clear hover (keep pin)
+                          setHoveredEvidenceId(null);
+                        }}
+                      >
                         <div className="mb-1 text-[11px] font-medium text-textMuted">
                           Sources
                         </div>
@@ -397,21 +404,13 @@ const ChatPage: React.FC = () => {
                                     setHoveredEvidenceId(chunkId);
                                   }
                                 }}
-                                onMouseLeave={() => {
-                                  if (!isPinned) {
-                                    setHoveredEvidenceId((current) =>
-                                      current === chunkId ? null : current
-                                    );
-                                  }
-                                }}
+                                // no onMouseLeave here -> prevents flicker
                                 onClick={() => {
                                   setPinnedEvidenceId((current) =>
                                     current === chunkId ? null : chunkId
                                   );
-                                  // Also ensure hovered state matches the new pinned one
-                                  setHoveredEvidenceId((current) =>
-                                    current === chunkId ? current : null
-                                  );
+                                  // keep this chunk active as hovered too
+                                  setHoveredEvidenceId(chunkId);
                                 }}
                                 className={[
                                   "inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] max-w-[220px] truncate transition",
@@ -464,7 +463,8 @@ const ChatPage: React.FC = () => {
                                 dist{" "}
                                 {activeEvidenceChunk.distance != null
                                   ? activeEvidenceChunk.distance.toFixed(3)
-                                  : "-"}
+                                  : "-"
+                                }
                               </span>
                               {pinnedEvidenceId ===
                                 `${baseIdPrefix}-${activeEvidenceChunk.source}-${activeEvidenceChunk.chunk}` && (
