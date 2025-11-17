@@ -2,8 +2,12 @@ import os
 import time
 import textwrap
 from typing import List, Dict
+from datetime import datetime
+
+import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
+
 from rag_pipeline import RAGPipeline, Document
 from metrics import precision_at_k, recall_at_k
 
@@ -18,6 +22,13 @@ if "last_answer" not in st.session_state:
     st.session_state.last_answer = None
 if "last_docs" not in st.session_state:
     st.session_state.last_docs = []
+if "last_query" not in st.session_state:
+    st.session_state.last_query = ""
+if "last_k" not in st.session_state:
+    st.session_state.last_k = 3
+if "eval_log" not in st.session_state:
+    # list of dicts: one row per evaluated run
+    st.session_state.eval_log = []
 
 # Sidebar config
 st.sidebar.title("RAG Controls")
@@ -60,6 +71,13 @@ with col1:
         st.session_state.last_latency_ms = latency
         st.session_state.last_answer = answer
         st.session_state.last_docs = docs
+        st.session_state.last_query = query
+        st.session_state.last_k = k
+
+        # clear any old relevance labels from previous runs
+        for key in list(st.session_state.keys()):
+            if key.startswith("rel_label_"):
+                del st.session_state[key]
 
     # --- Display from session state so UI persists across reruns ---
     if st.session_state.last_answer:
@@ -68,27 +86,94 @@ with col1:
 
         if show_chunks and st.session_state.last_docs:
             st.subheader("Retrieved Chunks")
+
             for i, d in enumerate(st.session_state.last_docs, 1):
-                with st.expander(f"Chunk {i}: {d.metadata.get('source','unknown')}"):
+                chunk_label = d.metadata.get("source", "unknown")
+                with st.expander(f"Chunk {i}: {chunk_label}"):
                     st.code(d.page_content)
+
+                    # Relevance labeling UI for this chunk
+                    label_key = f"rel_label_{i}"
+                    current = st.session_state.get(label_key, "Unlabeled")
+
+                    st.radio(
+                        "Is this chunk relevant to the question?",
+                        ["Unlabeled", "Relevant", "Not relevant"],
+                        index=["Unlabeled", "Relevant", "Not relevant"].index(current)
+                        if current in ["Unlabeled", "Relevant", "Not relevant"]
+                        else 0,
+                        key=label_key,
+                        horizontal=True,
+                    )
     else:
         st.info("Enter a question and press Run.")
 
 with col2:
-    st.subheader("Metrics (demo)")
-    # Placeholder demo labels
-    rel_labels = st.session_state.get("rel_labels", [])
-    if st.button("Mark retrieved as relevant (toy)"):
-        rel_labels = [True] + [False] * max(0, k - 1)
-        st.session_state["rel_labels"] = rel_labels
+    st.subheader("Metrics")
 
-    p_at_k = precision_at_k(rel_labels, k) if rel_labels else 0.0
-    r_at_k = recall_at_k(rel_labels, k) if rel_labels else 0.0
+    # Build rel_labels list from the per-chunk radios for the LAST run
+    rel_labels: List[bool] = []
+    for i, _ in enumerate(st.session_state.last_docs, 1):
+        label = st.session_state.get(f"rel_label_{i}", "Unlabeled")
+        rel_labels.append(label == "Relevant")  # True only if explicitly marked Relevant
+
+    # Use the k that was used during retrieval, not necessarily the current slider
+    k_eval = st.session_state.get("last_k", k)
+    if st.session_state.last_docs:
+        k_eval = min(k_eval, len(st.session_state.last_docs))
+
+    if rel_labels:
+        p_at_k = precision_at_k(rel_labels, k_eval)
+        r_at_k = recall_at_k(rel_labels, k_eval)
+    else:
+        p_at_k = 0.0
+        r_at_k = 0.0
 
     lat = st.session_state.last_latency_ms
     st.metric("Latency (ms)", value=f"{lat:.0f}" if isinstance(lat, (int, float)) else "-")
     st.metric("Precision@k", value=f"{p_at_k:.2f}")
     st.metric("Recall@k", value=f"{r_at_k:.2f}")
+
+    st.caption(f"Evaluated with k = {k_eval}")
+
+    st.markdown("---")
+    st.markdown("**Evaluation log**")
+
+    # Button to save current evaluation row
+    if st.button("Save this run to log"):
+        if st.session_state.last_docs:
+            st.session_state.eval_log.append(
+                {
+                    "timestamp": datetime.now().isoformat(timespec="seconds"),
+                    "query": st.session_state.last_query,
+                    "k": k_eval,
+                    "latency_ms": float(lat) if isinstance(lat, (int, float)) else None,
+                    "precision_at_k": p_at_k,
+                    "recall_at_k": r_at_k,
+                    "num_retrieved": len(st.session_state.last_docs),
+                }
+            )
+            st.success("Saved current run to evaluation log.")
+        else:
+            st.warning("Run a query first before saving to the log.")
+
+    # If we have any logged rows, show table, chart, and CSV download
+    if st.session_state.eval_log:
+        df = pd.DataFrame(st.session_state.eval_log)
+        st.dataframe(df, use_container_width=True)
+
+        # Simple precision/recall chart across runs
+        if len(df) > 1:
+            st.line_chart(df[["precision_at_k", "recall_at_k"]])
+
+        # CSV download
+        csv = df.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "Download evaluation CSV",
+            data=csv,
+            file_name="rag_eval_log.csv",
+            mime="text/csv",
+        )
 
 st.markdown("---")
 st.caption(
