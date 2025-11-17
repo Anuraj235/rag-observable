@@ -1,4 +1,3 @@
-# backend/main.py
 import time
 from typing import List, Optional
 
@@ -19,6 +18,7 @@ class ChunkOut(BaseModel):
     chunk: int
     text: str
     distance: Optional[float] = None
+    relevance: str
 
 
 class QueryResponse(BaseModel):
@@ -63,6 +63,21 @@ def compute_trust_score(docs: List[Document]) -> int:
     return max(0, min(99, base))
 
 
+def relevance_label(distance: Optional[float]) -> str:
+    """
+    Turn cosine distance into a human-readable relevance label.
+
+    Smaller distance = more similar.
+    """
+    if distance is None:
+        return "Unknown"
+    if distance < 0.35:
+        return "Related"
+    if distance < 0.65:
+        return "Somewhat related"
+    return "Off-topic"
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -88,12 +103,17 @@ def query_rag(payload: QueryRequest):
 
     chunks: List[ChunkOut] = []
     for d in docs:
+        raw_distance = d.metadata.get("distance")
+        distance_val: Optional[float] = float(raw_distance) if raw_distance is not None else None
+        label = relevance_label(distance_val)
+
         chunks.append(
             ChunkOut(
                 source=d.metadata.get("source", "unknown"),
                 chunk=int(d.metadata.get("chunk", 0)),
                 text=d.page_content,
-                distance=float(d.metadata.get("distance")) if d.metadata.get("distance") is not None else None,
+                distance=distance_val,
+                relevance=label,
             )
         )
 

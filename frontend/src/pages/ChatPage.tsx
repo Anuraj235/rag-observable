@@ -1,14 +1,14 @@
 import React, { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 
-
 type Role = "user" | "assistant";
 
 type ChunkMeta = {
   source: string;
   chunk: number;
-  distance: number;
+  distance: number | null;
   text: string;
+  relevance: string;
 };
 
 type MessageMeta = {
@@ -31,8 +31,9 @@ type QueryResponse = {
   chunks: {
     source: string;
     chunk: number;
-    distance: number;
+    distance: number | null;
     text: string;
+    relevance: string;
   }[];
 };
 
@@ -95,6 +96,7 @@ const ChatPage: React.FC = () => {
             chunk: c.chunk,
             distance: c.distance,
             text: c.text,
+            relevance: c.relevance,
           })),
         },
       };
@@ -124,18 +126,30 @@ const ChatPage: React.FC = () => {
     return `${Math.round(latency)} ms`;
   }
 
-  function distanceLabel(d: number) {
-    if (d < 0.35) return "Highly relevant";
-    if (d < 0.55) return "Related";
-    if (d < 0.75) return "Weak match";
-    return "Off-topic";
+  function relevanceLabel(relevance: string) {
+    switch (relevance) {
+      case "Related":
+        return "Related";
+      case "Somewhat related":
+        return "Somewhat related";
+      case "Off-topic":
+        return "Off-topic";
+      default:
+        return "Unknown";
+    }
   }
 
-  function distanceBadgeClass(d: number) {
-    if (d < 0.35) return "bg-emerald-50 text-emerald-700 border-emerald-200";
-    if (d < 0.55) return "bg-sky-50 text-sky-700 border-sky-200";
-    if (d < 0.75) return "bg-amber-50 text-amber-700 border-amber-200";
-    return "bg-rose-50 text-rose-700 border-rose-200";
+  function relevanceBadgeClass(relevance: string) {
+    switch (relevance) {
+      case "Related":
+        return "bg-emerald-50 text-emerald-700 border-emerald-200";
+      case "Somewhat related":
+        return "bg-sky-50 text-sky-700 border-sky-200";
+      case "Off-topic":
+        return "bg-rose-50 text-rose-700 border-rose-200";
+      default:
+        return "bg-slate-50 text-slate-500 border-slate-200";
+    }
   }
 
   return (
@@ -278,17 +292,20 @@ const ChatPage: React.FC = () => {
                         <span
                           className={[
                             "inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium",
-                            distanceBadgeClass(c.distance),
+                            relevanceBadgeClass(c.relevance),
                           ].join(" ")}
                         >
-                          {distanceLabel(c.distance)}
+                          {relevanceLabel(c.relevance)}
                         </span>
                       </div>
                       <div className="mt-1 line-clamp-2 text-[11px] text-textMuted">
                         {c.text}
                       </div>
                       <div className="mt-1 flex items-center justify-between text-[10px] text-slate-400">
-                        <span>dist {c.distance.toFixed(3)}</span>
+                        <span>
+                          dist{" "}
+                          {c.distance != null ? c.distance.toFixed(3) : "-"}
+                        </span>
                       </div>
                     </li>
                   ))}
