@@ -2,6 +2,7 @@ import React from "react";
 import { NavLink, Route, Routes } from "react-router-dom";
 import LandingPage from "./pages/LandingPage";
 import ChatPage from "./pages/ChatPage";
+import RunHistoryPage from "./pages/RunHistoryPage";
 
 const navLinkClass = ({ isActive }: { isActive: boolean }) =>
   [
@@ -28,6 +29,9 @@ const App: React.FC = () => {
           <NavLink to="/chat" className={navLinkClass}>
             Chat
           </NavLink>
+            <NavLink to="/history" className={navLinkClass}>
+            History
+          </NavLink>
         </nav>
       </header>
 
@@ -36,7 +40,7 @@ const App: React.FC = () => {
         <Routes>
           <Route path="/" element={<LandingPage />} />
           <Route path="/chat" element={<ChatPage />} />
-          <Route path="*" element={<LandingPage />} />
+         <Route path="/history" element={<RunHistoryPage />} />
         </Routes>
       </div>
     </div>

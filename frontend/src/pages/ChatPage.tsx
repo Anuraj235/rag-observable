@@ -65,6 +65,8 @@ type MessageMeta = {
   chunks: ChunkMeta[];
   /** Original question that produced this answer (for highlighting). */
   question?: string;
+  /** Top-k used for this answer (for history page). */
+  top_k?: number;
 };
 
 type Message = {
@@ -121,6 +123,27 @@ const ChatPage: React.FC = () => {
   const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
   const lastMeta = lastAssistant?.meta;
 
+  // 🔹 Save assistant runs into sessionStorage for the Run History page
+  useEffect(() => {
+    const runs = messages
+      .filter((m) => m.role === "assistant" && m.meta)
+      .map((m) => ({
+        id: m.id,
+        question: m.meta?.question ?? "",
+        trust_score: m.meta?.trust_score ?? null,
+        latency_ms: m.meta?.latency_ms ?? null,
+        top_k: m.meta?.top_k ?? null,
+        chunks: m.meta?.chunks ?? [],
+        created_at: Date.now(),
+      }));
+
+    try {
+      sessionStorage.setItem("rag_run_history", JSON.stringify(runs));
+    } catch {
+      // ignore if sessionStorage is unavailable
+    }
+  }, [messages]);
+
   async function handleSend(e: FormEvent) {
     e.preventDefault();
     const trimmed = input.trim();
@@ -159,6 +182,7 @@ const ChatPage: React.FC = () => {
           trust_score: data.trust_score ?? null,
           latency_ms: data.latency_ms ?? null,
           question: trimmed,
+          top_k: topK,
           chunks: (data.chunks ?? []).map((c) => ({
             source: c.source,
             chunk: c.chunk,
@@ -386,9 +410,7 @@ const ChatPage: React.FC = () => {
                                   : "-"}
                               </span>
                               {pinnedEvidenceId ===
-                                `${baseIdPrefix}-${activeEvidenceChunk.source}-${
-                                  activeEvidenceChunk.chunk
-                                }` && (
+                                `${baseIdPrefix}-${activeEvidenceChunk.source}-${activeEvidenceChunk.chunk}` && (
                                 <button
                                   type="button"
                                   onClick={() => setPinnedEvidenceId(null)}
