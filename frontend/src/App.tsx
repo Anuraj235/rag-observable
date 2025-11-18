@@ -30,7 +30,7 @@ const App: React.FC = () => {
             Chat
           </NavLink>
             <NavLink to="/history" className={navLinkClass}>
-            History
+            Run History
           </NavLink>
         </nav>
       </header>
