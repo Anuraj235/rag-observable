@@ -1,4 +1,8 @@
 import time
+import json
+import uuid
+from datetime import datetime
+import os
 from typing import List, Optional
 
 from fastapi import FastAPI
@@ -29,6 +33,17 @@ class QueryResponse(BaseModel):
 
 
 app = FastAPI(title="Faithful RAG API")
+
+# ---------------------------------------------------------
+# STEP 1: Logging directory setup
+# ---------------------------------------------------------
+LOG_DIR = "data"
+LOG_PATH = os.path.join(LOG_DIR, "run_logs.jsonl")
+
+# Ensure the directory exists
+os.makedirs(LOG_DIR, exist_ok=True)
+# ---------------------------------------------------------
+
 
 # CORS so React (localhost:5173, 3000, etc.) can call the API
 origins = [
@@ -78,15 +93,72 @@ def relevance_label(distance: Optional[float]) -> str:
     return "Off-topic"
 
 
+# ---------------------------------------------------------
+# STEP 2: Helper to log one RAG run to JSONL
+# ---------------------------------------------------------
+def log_run_to_file(
+    query: str,
+    answer: str,
+    latency_ms: float,
+    trust_score: int,
+    docs: List[Document],
+    chunks: List[ChunkOut],
+    top_k: int,
+    model_name: str,
+) -> None:
+    """
+    Append a single RAG run to data/run_logs.jsonl as one JSON line.
+    This will be used later for analytics + fine-tuning.
+    """
+    run_id = str(uuid.uuid4())
+    timestamp = datetime.utcnow().isoformat() + "Z"
+
+    # Build a serializable representation of retrieved docs
+    retrieved = []
+    n = min(len(docs), len(chunks))  # safeguard
+    for i in range(n):
+        d = docs[i]
+        ch = chunks[i]
+        retrieved.append(
+            {
+                "source": d.metadata.get("source", "unknown"),
+                "chunk": d.metadata.get("chunk", 0),
+                "doc_id": d.metadata.get("id"),
+                "distance": d.metadata.get("distance"),
+                "relevance": ch.relevance,
+                "text": d.page_content,
+            }
+        )
+
+    record = {
+        "run_id": run_id,
+        "timestamp": timestamp,
+        "query": query,
+        "answer": answer,
+        "latency_ms": latency_ms,
+        "trust_score": trust_score,
+        "top_k": top_k,
+        "model": model_name,
+        # To be filled later when you label runs for fine-tuning
+        "label": None,       # e.g. "good", "mixed", "off_topic", "no_evidence"
+        "eval_notes": None,
+        "retrieved": retrieved,
+    }
+
+    with open(LOG_PATH, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+# ---------------------------------------------------------
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
 
 @app.post("/api/rebuild")
 def rebuild_index():
     pipeline.rebuild_index()
     return {"status": "ok", "message": "Index rebuilt successfully."}
-
 
 
 @app.post("/api/query", response_model=QueryResponse)
@@ -122,6 +194,24 @@ def query_rag(payload: QueryRequest):
                 relevance=label,
             )
         )
+
+    # ---------------------------------------------------------
+    # STEP 3: log this run to run_logs.jsonl
+    # ---------------------------------------------------------
+    try:
+        log_run_to_file(
+            query=q,
+            answer=answer,
+            latency_ms=latency_ms,
+            trust_score=trust_score,
+            docs=docs,
+            chunks=chunks,
+            top_k=payload.top_k,
+            model_name=pipeline.llm_model,
+        )
+    except Exception as e:
+        print(f"[WARN] Failed to log run: {e}")
+    # ---------------------------------------------------------
 
     return QueryResponse(
         answer=answer,
