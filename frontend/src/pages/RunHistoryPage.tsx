@@ -1,5 +1,30 @@
 import React, { useEffect, useState } from "react";
 
+const API_BASE = "http://localhost:8000";
+
+type BackendChunk = {
+  source: string;
+  chunk: number;
+  doc_id?: string | null;
+  distance?: number | null;
+  relevance?: string | null;
+  text: string;
+};
+
+type BackendRun = {
+  run_id: string;
+  timestamp: string;
+  query: string;
+  answer: string;
+  latency_ms: number;
+  trust_score: number;
+  top_k: number;
+  model?: string | null;
+  label?: string | null;
+  eval_notes?: string | null;
+  retrieved: BackendChunk[];
+};
+
 type ChunkMeta = {
   source: string;
   chunk: number;
@@ -8,19 +33,21 @@ type ChunkMeta = {
   relevance: string;
 };
 
-type RunRecord = {
-  id: string;
-  question: string;
+type UiRun = {
+  run_id: string;
+  query: string;
   trust_score: number | null;
   latency_ms: number | null;
   top_k: number | null;
   chunks: ChunkMeta[];
-  created_at: number;
+  timestamp: string;
+  label?: string | null;
+  eval_notes?: string | null;
 };
 
-const RUN_HISTORY_KEY = "rag_run_history";
-
 type RunStatusKind = "good" | "mixed" | "off" | "no";
+
+type LabelValue = "good" | "mixed" | "off_topic" | "no_evidence";
 
 /** Status icon + label + kind based on relevance mix. */
 function getRunStatus(chunks: ChunkMeta[]): {
@@ -53,9 +80,11 @@ function formatLatency(latency: number | null) {
   return `${Math.round(latency)} ms`;
 }
 
-function formatDate(ts: number) {
-  if (!ts) return "-";
-  const d = new Date(ts);
+function formatDate(iso: string) {
+  if (!iso) return "-";
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return "-";
+  const d = new Date(t);
   return d.toLocaleString(undefined, {
     month: "short",
     day: "numeric",
@@ -65,22 +94,61 @@ function formatDate(ts: number) {
 }
 
 const RunHistoryPage: React.FC = () => {
-  const [runs, setRuns] = useState<RunRecord[]>([]);
+  const [runs, setRuns] = useState<UiRun[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<RunStatusKind | "all">("all");
   const [sortOrder, setSortOrder] = useState<"newest" | "oldest">("newest");
 
-  useEffect(() => {
+  const [labelSavingId, setLabelSavingId] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const [clearing, setClearing] = useState(false);
+
+  // ---------- load runs from backend ----------
+  async function fetchRuns() {
+    setLoading(true);
+    setError(null);
     try {
-      const raw = sessionStorage.getItem(RUN_HISTORY_KEY);
-      if (!raw) return;
-      const parsed: RunRecord[] = JSON.parse(raw);
-      setRuns(parsed);
-    } catch (err) {
-      console.error("Failed to load run history from sessionStorage", err);
+      const res = await fetch(`${API_BASE}/api/runs?limit=200`);
+      if (!res.ok) {
+        throw new Error(`Backend returned ${res.status}`);
+      }
+      const data: BackendRun[] = await res.json();
+
+      const uiRuns: UiRun[] = data.map((r) => ({
+        run_id: r.run_id,
+        query: r.query ?? "",
+        trust_score: r.trust_score ?? null,
+        latency_ms: r.latency_ms ?? null,
+        top_k: r.top_k ?? null,
+        timestamp: r.timestamp,
+        label: r.label,
+        eval_notes: r.eval_notes,
+        chunks: (r.retrieved ?? []).map((c) => ({
+          source: c.source,
+          chunk: c.chunk,
+          distance: c.distance ?? null,
+          text: c.text,
+          relevance: c.relevance ?? "Unknown",
+        })),
+      }));
+
+      setRuns(uiRuns);
+    } catch (err: any) {
+      console.error(err);
+      setError(err?.message || "Failed to load runs.");
+    } finally {
+      setLoading(false);
     }
+  }
+
+  useEffect(() => {
+    fetchRuns();
   }, []);
 
+  // ---------- stats ----------
   const totalRuns = runs.length;
   const totalChunks = runs.reduce((sum, r) => sum + r.chunks.length, 0);
   const avgTrust =
@@ -93,43 +161,107 @@ const RunHistoryPage: React.FC = () => {
   const goodRuns = runs.filter((r) => getRunStatus(r.chunks).kind === "good").length;
   const offTopicRuns = runs.filter((r) => getRunStatus(r.chunks).kind === "off").length;
 
-  function clearHistory() {
-    const ok = confirm("Clear all run history for this session?");
+  // ---------- actions ----------
+  async function clearHistory() {
+    const ok = confirm("Clear all backend run logs? This cannot be undone.");
     if (!ok) return;
 
-    setRuns([]);
+    setClearing(true);
+    setError(null);
     try {
-      sessionStorage.removeItem(RUN_HISTORY_KEY);
-    } catch {
-      // ignore
+      const res = await fetch(`${API_BASE}/api/runs`, { method: "DELETE" });
+      if (!res.ok) {
+        throw new Error(`Backend returned ${res.status}`);
+      }
+      setRuns([]);
+    } catch (err: any) {
+      console.error(err);
+      setError(err?.message || "Failed to clear logs.");
+    } finally {
+      setClearing(false);
+    }
+  }
+
+  async function updateLabel(run_id: string, label: LabelValue) {
+    setLabelSavingId(run_id);
+    setError(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/runs/${run_id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ label }),
+      });
+      if (!res.ok) {
+        const detail = await res.json().catch(() => null);
+        const msg = detail?.detail ?? `Backend returned ${res.status}`;
+        throw new Error(msg);
+      }
+
+      // update local state
+      setRuns((prev) =>
+        prev.map((r) => (r.run_id === run_id ? { ...r, label } : r))
+      );
+    } catch (err: any) {
+      console.error(err);
+      setError(err?.message || "Failed to update label.");
+    } finally {
+      setLabelSavingId(null);
+    }
+  }
+
+  async function exportDataset() {
+    setExporting(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/export-dataset`);
+      if (!res.ok) {
+        const detail = await res.json().catch(() => null);
+        const msg = detail?.detail ?? `Backend returned ${res.status}`;
+        throw new Error(msg);
+      }
+
+      const text = await res.text();
+      const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "fine_tune_dataset.jsonl";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err: any) {
+      console.error(err);
+      setError(err?.message || "Failed to export dataset.");
+    } finally {
+      setExporting(false);
     }
   }
 
   // ---------- FILTER + SORT PIPELINE ----------
-  // attach original index so we can sort deterministically regardless of timestamps
   const indexedRuns = runs.map((run, index) => ({ run, index }));
   const searchLower = search.trim().toLowerCase();
 
   const filteredIndexedRuns = indexedRuns
-    // search by question text
     .filter(({ run }) => {
       if (!searchLower) return true;
-      const q = (run.question || "").toLowerCase();
+      const q = (run.query || "").toLowerCase();
       return q.includes(searchLower);
     })
-    // filter by status chip
     .filter(({ run }) => {
       if (statusFilter === "all") return true;
       return getRunStatus(run.chunks).kind === statusFilter;
     });
 
-  const visibleIndexedRuns = [...filteredIndexedRuns].sort((a, b) =>
-    sortOrder === "newest" ? b.index - a.index : a.index - b.index
-  );
+  const visibleIndexedRuns = [...filteredIndexedRuns].sort((a, b) => {
+    const ta = Date.parse(a.run.timestamp) || 0;
+    const tb = Date.parse(b.run.timestamp) || 0;
+    return sortOrder === "newest" ? tb - ta : ta - tb;
+  });
 
-  // For length checks
   const visibleRuns = visibleIndexedRuns.map((x) => x.run);
-  // -------------------------------------------
+
+  // ------------------------------------------------------------
 
   return (
     <main className="min-h-[calc(100vh-64px)] bg-bg px-8 py-6">
@@ -139,13 +271,42 @@ const RunHistoryPage: React.FC = () => {
           <div>
             <h1 className="text-xl font-semibold text-textDark">Run History</h1>
             <p className="text-xs text-textMuted">
-              See how each question performed: trust, retrieval mix, and top-k
-              settings.
+              Loaded from backend logs: trust, retrieval mix, labels, and top-k
+              settings for each query.
             </p>
           </div>
 
-          <div className="flex items-center gap-2">
-            {/* sort pills - always visible */}
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={fetchRuns}
+              className="text-[11px] px-3 py-1.5 rounded-full border border-slate-200 text-textMuted hover:text-primary hover:border-primary/60 hover:bg-primary/5 transition"
+              disabled={loading}
+            >
+              {loading ? "Refreshing…" : "Refresh"}
+            </button>
+
+            <button
+              type="button"
+              onClick={exportDataset}
+              disabled={exporting || runs.length === 0}
+              className="text-[11px] px-3 py-1.5 rounded-full border border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 transition disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              {exporting ? "Exporting…" : "Export dataset"}
+            </button>
+
+            {runs.length > 0 && (
+              <button
+                type="button"
+                onClick={clearHistory}
+                disabled={clearing}
+                className="text-[11px] px-3 py-1.5 rounded-full border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100 transition disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                {clearing ? "Clearing…" : "Clear logs"}
+              </button>
+            )}
+
+            {/* sort pills */}
             <div className="flex items-center rounded-full bg-slate-50 border border-slate-200 text-[11px] px-1">
               <button
                 type="button"
@@ -172,18 +333,15 @@ const RunHistoryPage: React.FC = () => {
                 Oldest
               </button>
             </div>
-
-            {runs.length > 0 && (
-              <button
-                type="button"
-                onClick={clearHistory}
-                className="text-[11px] px-3 py-1.5 rounded-full border border-slate-200 text-textMuted hover:text-primary hover:border-primary/60 hover:bg-primary/5 transition"
-              >
-                Clear history
-              </button>
-            )}
           </div>
         </header>
+
+        {/* Error banner */}
+        {error && (
+          <div className="mb-3 rounded-2xl bg-rose-50 border border-rose-200 px-4 py-2 text-[11px] text-rose-700">
+            {error}
+          </div>
+        )}
 
         {/* Summary cards */}
         <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 mb-4">
@@ -270,10 +428,14 @@ const RunHistoryPage: React.FC = () => {
 
         {/* Runs list */}
         <div className="rounded-3xl bg-white border border-indigo-50 shadow-soft overflow-hidden">
-          {runs.length === 0 ? (
+          {loading && runs.length === 0 ? (
             <div className="px-4 py-6 text-xs text-textMuted">
-              No runs recorded yet. Ask a question in the Chat Assistant to see
-              history here.
+              Loading runs from backend…
+            </div>
+          ) : runs.length === 0 ? (
+            <div className="px-4 py-6 text-xs text-textMuted">
+              No runs logged yet. Ask a question in the Chat Assistant to
+              generate history.
             </div>
           ) : visibleRuns.length === 0 ? (
             <div className="px-4 py-6 text-xs text-textMuted">
@@ -304,6 +466,9 @@ const RunHistoryPage: React.FC = () => {
                       Status
                     </th>
                     <th className="text-left px-3 py-2 font-medium text-textMuted">
+                      Label
+                    </th>
+                    <th className="text-left px-3 py-2 font-medium text-textMuted">
                       k
                     </th>
                     <th className="text-left px-3 py-2 font-medium text-textMuted">
@@ -312,7 +477,7 @@ const RunHistoryPage: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {visibleIndexedRuns.map(({ run, index }) => {
+                  {visibleIndexedRuns.map(({ run }, rowIdx) => {
                     const relatedCount = run.chunks.filter(
                       (c) => c.relevance === "Related"
                     ).length;
@@ -323,9 +488,6 @@ const RunHistoryPage: React.FC = () => {
                       (c) => c.relevance === "Off-topic"
                     ).length;
                     const status = getRunStatus(run.chunks);
-
-                    // global chronological number, not just row index
-                    const globalNumber = index + 1;
 
                     const statusChipClasses =
                       status.kind === "good"
@@ -338,20 +500,25 @@ const RunHistoryPage: React.FC = () => {
 
                     const trustPercent = run.trust_score ?? 0;
 
+                    const labelValue = (run.label ?? "") as
+                      | LabelValue
+                      | ""
+                      | undefined;
+
                     return (
                       <tr
-                        key={run.id}
+                        key={run.run_id}
                         className="border-b border-slate-50 hover:bg-slate-50/60"
                       >
                         <td className="px-3 py-2 text-textMuted align-top">
-                          #{globalNumber}
+                          #{rowIdx + 1}
                         </td>
                         <td className="px-3 py-2 align-top max-w-[320px]">
                           <div
                             className="text-[11px] text-textDark line-clamp-2"
-                            title={run.question || "(no question captured)"}
+                            title={run.query || "(no question captured)"}
                           >
-                            {run.question || "(no question captured)"}
+                            {run.query || "(no question captured)"}
                           </div>
                         </td>
                         <td className="px-3 py-2 align-top text-textDark w-[90px]">
@@ -388,10 +555,28 @@ const RunHistoryPage: React.FC = () => {
                           </span>
                         </td>
                         <td className="px-3 py-2 align-top text-textMuted">
+                          <select
+                            className="border border-slate-200 rounded-full px-2 py-1 text-[10px] bg-white"
+                            value={labelValue || ""}
+                            onChange={(e) => {
+                              const val = e.target.value as LabelValue | "";
+                              if (!val) return;
+                              updateLabel(run.run_id, val);
+                            }}
+                            disabled={labelSavingId === run.run_id}
+                          >
+                            <option value="">(none)</option>
+                            <option value="good">good</option>
+                            <option value="mixed">mixed</option>
+                            <option value="off_topic">off_topic</option>
+                            <option value="no_evidence">no_evidence</option>
+                          </select>
+                        </td>
+                        <td className="px-3 py-2 align-top text-textMuted">
                           {run.top_k ?? "-"}
                         </td>
                         <td className="px-3 py-2 align-top text-textMuted whitespace-nowrap">
-                          {formatDate(run.created_at)}
+                          {formatDate(run.timestamp)}
                         </td>
                       </tr>
                     );
