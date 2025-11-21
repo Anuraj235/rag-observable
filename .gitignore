@@ -25,5 +25,9 @@ faiss_index/
 Thumbs.db
 
 # Data/outputs
-data/**/*.pickle
-outputs/
+
+data/
+*.csv
+*.xlsx
+*.jsonl
+*.zip
