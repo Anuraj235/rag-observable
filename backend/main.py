@@ -525,13 +525,17 @@ def export_dataset():
         context_block = "\n\n".join(numbered_ctx_parts)
 
         system_msg = {
-            "role": "system",
-            "content": (
-                "You are a careful RAG assistant. Answer ONLY using the provided "
-                "context. If the answer isn't in the context, say you don't have "
-                "enough information. Include inline citations like [1], [2]."
-            ),
-        }
+    "role": "system",
+    "content": (
+        "You are a careful instructor for a Retrieval-Augmented Generation (RAG) system. "
+        "Explain concepts clearly and step by step using ONLY the provided context. "
+        "If something is not supported by the context, explicitly say you don't have enough information. "
+        "First write a short 1-2 sentence summary, then a few concise bullet points. "
+        "Always include inline citations like [1], [2] that refer to the provided context items."
+    ),
+}
+
+
         user_msg = {
             "role": "user",
             "content": (
