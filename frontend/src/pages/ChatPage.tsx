@@ -67,6 +67,8 @@ type MessageMeta = {
   question?: string;
   /** Top-k used for this answer (for history page). */
   top_k?: number;
+  /** Which model actually produced this answer (base vs fine-tuned). */
+  model_used?: string | null;
 };
 
 type Message = {
@@ -87,6 +89,8 @@ type QueryResponse = {
     text: string;
     relevance: string;
   }[];
+  /** Returned by backend: name of model used (ft or base). */
+  model_used?: string | null;
 };
 
 const API_BASE = "http://localhost:8000";
@@ -108,6 +112,8 @@ const ChatPage: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [topK, setTopK] = useState<number>(3);
   const [showOffTopic, setShowOffTopic] = useState<boolean>(true);
+  /** Toggle: should we call the fine-tuned model or the base model? */
+  const [useFinetuned, setUseFinetuned] = useState<boolean>(true);
 
   // Track when we've loaded from storage so we don't overwrite it on first render
   const [initialized, setInitialized] = useState(false);
@@ -166,6 +172,7 @@ const ChatPage: React.FC = () => {
         latency_ms: m.meta?.latency_ms ?? null,
         top_k: m.meta?.top_k ?? null,
         chunks: m.meta?.chunks ?? [],
+        model_used: m.meta?.model_used ?? null,
         created_at: Date.now(),
       }));
 
@@ -195,7 +202,12 @@ const ChatPage: React.FC = () => {
       const res = await fetch(`${API_BASE}/api/query`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: trimmed, top_k: topK }),
+        body: JSON.stringify({
+          query: trimmed,
+          top_k: topK,
+          // 🔑 tell backend whether to use fine-tuned model
+          use_finetuned: useFinetuned,
+        }),
       });
 
       if (!res.ok) {
@@ -215,6 +227,7 @@ const ChatPage: React.FC = () => {
           latency_ms: data.latency_ms ?? null,
           question: trimmed,
           top_k: topK,
+          model_used: data.model_used ?? null,
           chunks: (data.chunks ?? []).map((c) => ({
             source: c.source,
             chunk: c.chunk,
@@ -295,6 +308,12 @@ const ChatPage: React.FC = () => {
     }
   }
 
+  function formatModelUsed(model?: string | null) {
+    if (!model) return "Unknown model";
+    // You can customize this if you know your base vs FT names
+    return model;
+  }
+
   return (
     // 🔒 Lock whole layout to viewport height (minus navbar) and prevent page scroll
     <main className="h-[calc(100vh-64px)] bg-bg px-8 py-6 flex gap-6 overflow-hidden">
@@ -310,14 +329,38 @@ const ChatPage: React.FC = () => {
             </p>
           </div>
 
-          {/* Clear chat button */}
-          <button
-            type="button"
-            onClick={clearChat}
-            className="text-[11px] px-3 py-1.5 rounded-full border border-slate-200 text-textMuted hover:text-primary hover:border-primary/60 hover:bg-primary/5 transition"
-          >
-            Clear chat
-          </button>
+          <div className="flex items-center gap-3">
+            {/* Fine-tuned toggle */}
+            <label className="flex items-center gap-2 text-[11px] text-textMuted cursor-pointer">
+              <span className="font-medium text-textDark">Use fine-tuned model</span>
+              <button
+                type="button"
+                onClick={() => setUseFinetuned((prev) => !prev)}
+                className={[
+                  "relative inline-flex h-4 w-7 items-center rounded-full border transition",
+                  useFinetuned
+                    ? "bg-primary border-primary"
+                    : "bg-slate-200 border-slate-300",
+                ].join(" ")}
+              >
+                <span
+                  className={[
+                    "inline-block h-3 w-3 transform rounded-full bg-white shadow transition",
+                    useFinetuned ? "translate-x-3" : "translate-x-0.5",
+                  ].join(" ")}
+                />
+              </button>
+            </label>
+
+            {/* Clear chat button */}
+            <button
+              type="button"
+              onClick={clearChat}
+              className="text-[11px] px-3 py-1.5 rounded-full border border-slate-200 text-textMuted hover:text-primary hover:border-primary/60 hover:bg-primary/5 transition"
+            >
+              Clear chat
+            </button>
+          </div>
         </div>
 
         {/* Chat container */}
@@ -545,7 +588,7 @@ const ChatPage: React.FC = () => {
           </div>
 
           {/* Rebuild index button */}
-          <div className="mt-4">
+          <div className="mt-4 flex items-center justify-between">
             <button
               onClick={async () => {
                 const ok = confirm(
@@ -570,6 +613,15 @@ const ChatPage: React.FC = () => {
             >
               Rebuild Index
             </button>
+
+            {lastMeta && (
+              <div className="text-[10px] text-textMuted text-right">
+                <div className="font-medium text-textDark">Model used</div>
+                <div className="truncate max-w-[150px]">
+                  {formatModelUsed(lastMeta.model_used)}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Only show metrics + legend when we have a last answer */}
