@@ -1,4 +1,4 @@
-import time
+﻿import time
 import json
 import uuid
 from datetime import datetime
@@ -19,6 +19,7 @@ from rag_pipeline import RAGPipeline, Document  # assumes rag_pipeline.py is in 
 class QueryRequest(BaseModel):
     query: str
     top_k: int = 3
+    use_finetuned: bool = True  # 🔹 frontend toggle
 
 
 class ChunkOut(BaseModel):
@@ -34,6 +35,7 @@ class QueryResponse(BaseModel):
     latency_ms: float
     trust_score: int
     chunks: List[ChunkOut]
+    model: Optional[str] = None  # 🔹 which model actually answered
 
 
 # ---------------------------------------------------------
@@ -136,6 +138,21 @@ def relevance_label(distance: Optional[float]) -> str:
     if distance < 0.65:
         return "Somewhat related"
     return "Off-topic"
+
+
+def model_name_for_run(use_finetuned: bool) -> str:
+    """
+    Decide which model name to log + return.
+    Falls back safely if attributes are missing.
+    """
+    ft = getattr(pipeline, "ft_model", None)
+    base = getattr(pipeline, "base_model", None) or getattr(
+        pipeline, "llm_model", "gpt-4o"
+    )
+
+    if use_finetuned and ft:
+        return ft
+    return base
 
 
 # ---------------------- Logging helpers ----------------------
@@ -306,14 +323,16 @@ def query_rag(payload: QueryRequest):
             latency_ms=0.0,
             trust_score=0,
             chunks=[],
+            model=None,
         )
 
     t0 = time.time()
     docs = pipeline.retrieve(q, k=payload.top_k)
-    answer = pipeline.generate(q, docs)
+    answer = pipeline.generate(q, docs, use_finetuned=payload.use_finetuned)
     latency_ms = (time.time() - t0) * 1000.0
 
     trust_score = compute_trust_score(docs)
+    model_used = model_name_for_run(payload.use_finetuned)
 
     chunks: List[ChunkOut] = []
     for d in docs:
@@ -340,7 +359,7 @@ def query_rag(payload: QueryRequest):
             docs=docs,
             chunks=chunks,
             top_k=payload.top_k,
-            model_name=pipeline.llm_model,
+            model_name=model_used,
         )
     except Exception as e:
         print(f"[WARN] Failed to log run: {e}")
@@ -350,6 +369,7 @@ def query_rag(payload: QueryRequest):
         latency_ms=latency_ms,
         trust_score=trust_score,
         chunks=chunks,
+        model=model_used,
     )
 
 
@@ -369,6 +389,7 @@ def query_rag_rerank(payload: QueryRequest):
             latency_ms=0.0,
             trust_score=0,
             chunks=[],
+            model=None,
         )
 
     t0 = time.time()
@@ -391,9 +412,10 @@ def query_rag_rerank(payload: QueryRequest):
     scored_docs.sort(key=lambda x: x[0], reverse=True)
     reranked_docs = [d for _, d in scored_docs]
 
-    answer = pipeline.generate(q, reranked_docs)
+    answer = pipeline.generate(q, reranked_docs, use_finetuned=payload.use_finetuned)
     latency_ms = (time.time() - t0) * 1000.0
     trust_score = compute_trust_score(reranked_docs)
+    model_used = model_name_for_run(payload.use_finetuned)
 
     chunks: List[ChunkOut] = []
     for d in reranked_docs:
@@ -420,7 +442,7 @@ def query_rag_rerank(payload: QueryRequest):
             docs=reranked_docs,
             chunks=chunks,
             top_k=payload.top_k,
-            model_name=pipeline.llm_model,
+            model_name=model_used,
         )
     except Exception as e:
         print(f"[WARN] Failed to log reranked run: {e}")
@@ -430,6 +452,7 @@ def query_rag_rerank(payload: QueryRequest):
         latency_ms=latency_ms,
         trust_score=trust_score,
         chunks=chunks,
+        model=model_used,
     )
 
 
@@ -525,16 +548,15 @@ def export_dataset():
         context_block = "\n\n".join(numbered_ctx_parts)
 
         system_msg = {
-    "role": "system",
-    "content": (
-        "You are a careful instructor for a Retrieval-Augmented Generation (RAG) system. "
-        "Explain concepts clearly and step by step using ONLY the provided context. "
-        "If something is not supported by the context, explicitly say you don't have enough information. "
-        "First write a short 1-2 sentence summary, then a few concise bullet points. "
-        "Always include inline citations like [1], [2] that refer to the provided context items."
-    ),
-}
-
+            "role": "system",
+            "content": (
+                "You are a careful instructor for a Retrieval-Augmented Generation (RAG) system. "
+                "Explain concepts clearly and step by step using ONLY the provided context. "
+                "If something is not supported by the context, explicitly say you don't have enough information. "
+                "First write a short 1-2 sentence summary, then a few concise bullet points. "
+                "Always include inline citations like [1], [2] that refer to the provided context items."
+            ),
+        }
 
         user_msg = {
             "role": "user",
