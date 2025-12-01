@@ -21,8 +21,6 @@ function escapeRegExp(str: string): string {
 
 /**
  * Highlight query words inside a chunk of text using <mark>.
- * We keep it simple: split query into words, ignore very short ones,
- * and wrap matches in a yellow highlight span.
  */
 function highlightText(text: string, query: string): string {
   if (!text || !query) return text;
@@ -69,6 +67,8 @@ type MessageMeta = {
   top_k?: number;
   /** Which model actually produced this answer (base vs fine-tuned). */
   model_used?: string | null;
+  /** Whether this answer was requested with the fine-tuned flag. */
+  used_finetuned?: boolean | null;
 };
 
 type Message = {
@@ -93,6 +93,13 @@ type QueryResponse = {
   model_used?: string | null;
 };
 
+type Comparison = {
+  answer: string;
+  model_used?: string | null;
+  latency_ms?: number | null;
+  used_finetuned?: boolean | null;
+};
+
 const API_BASE = "http://localhost:8000";
 const CHAT_STORAGE_KEY = "rag_chat_messages";
 const RUN_HISTORY_KEY = "rag_run_history";
@@ -100,7 +107,6 @@ const RUN_HISTORY_KEY = "rag_run_history";
 /** Convert distance (smaller = better) to a bar width percentage. */
 function distanceWidth(distance: number | null): string {
   if (distance == null) return "0%";
-  // Clamp into [0, 1] and treat 0 as best (100% filled), 1 as worst (0%).
   const d = Math.max(0, Math.min(1, distance));
   const closeness = 1 - d;
   return `${Math.round(closeness * 100)}%`;
@@ -115,12 +121,21 @@ const ChatPage: React.FC = () => {
   /** Toggle: should we call the fine-tuned model or the base model? */
   const [useFinetuned, setUseFinetuned] = useState<boolean>(true);
 
-  // Track when we've loaded from storage so we don't overwrite it on first render
   const [initialized, setInitialized] = useState(false);
 
   // For hover + click evidence previews on source pills
-  const [hoveredEvidenceId, setHoveredEvidenceId] = useState<string | null>(null);
+  const [hoveredEvidenceId, setHoveredEvidenceId] = useState<string | null>(
+    null
+  );
   const [pinnedEvidenceId, setPinnedEvidenceId] = useState<string | null>(null);
+
+  // A/B comparison results keyed by assistant message id
+  const [comparisons, setComparisons] = useState<Record<string, Comparison>>(
+    {}
+  );
+  const [compareLoading, setCompareLoading] = useState<
+    Record<string, boolean>
+  >({});
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -146,7 +161,9 @@ const ChatPage: React.FC = () => {
     el.scrollTop = el.scrollHeight;
   }, [messages.length]);
 
-  const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
+  const lastAssistant = [...messages].reverse().find(
+    (m) => m.role === "assistant"
+  );
   const lastMeta = lastAssistant?.meta;
 
   // 🔹 Persist chat messages to sessionStorage
@@ -173,6 +190,7 @@ const ChatPage: React.FC = () => {
         top_k: m.meta?.top_k ?? null,
         chunks: m.meta?.chunks ?? [],
         model_used: m.meta?.model_used ?? null,
+        used_finetuned: m.meta?.used_finetuned ?? null,
         created_at: Date.now(),
       }));
 
@@ -205,7 +223,6 @@ const ChatPage: React.FC = () => {
         body: JSON.stringify({
           query: trimmed,
           top_k: topK,
-          // 🔑 tell backend whether to use fine-tuned model
           use_finetuned: useFinetuned,
         }),
       });
@@ -228,6 +245,7 @@ const ChatPage: React.FC = () => {
           question: trimmed,
           top_k: topK,
           model_used: data.model_used ?? null,
+          used_finetuned: useFinetuned,
           chunks: (data.chunks ?? []).map((c) => ({
             source: c.source,
             chunk: c.chunk,
@@ -239,9 +257,10 @@ const ChatPage: React.FC = () => {
       };
 
       setMessages((prev) => [...prev, assistantMessage]);
-      // Clear any previously pinned evidence when a new answer arrives
       setPinnedEvidenceId(null);
       setHoveredEvidenceId(null);
+      setComparisons({});
+      setCompareLoading({});
     } catch (err) {
       console.error(err);
       const errorMessage: Message = {
@@ -256,6 +275,54 @@ const ChatPage: React.FC = () => {
     }
   }
 
+  async function handleCompare(message: Message, targetUseFinetuned: boolean) {
+    if (!message.meta?.question) return;
+
+    const question = message.meta.question;
+    const kForMsg = message.meta.top_k ?? topK;
+
+    setCompareLoading((prev) => ({ ...prev, [message.id]: true }));
+    try {
+      const res = await fetch(`${API_BASE}/api/query`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query: question,
+          top_k: kForMsg,
+          use_finetuned: targetUseFinetuned,
+        }),
+      });
+
+      if (!res.ok) {
+        throw new Error(`Backend returned ${res.status}`);
+      }
+
+      const data: QueryResponse = await res.json();
+      const cleanedAnswer = stripSourcesFromAnswer(data.answer);
+
+      setComparisons((prev) => ({
+        ...prev,
+        [message.id]: {
+          answer: cleanedAnswer,
+          model_used: data.model_used ?? null,
+          latency_ms: data.latency_ms ?? null,
+          used_finetuned: targetUseFinetuned,
+        },
+      }));
+    } catch (err) {
+      console.error(err);
+      setComparisons((prev) => ({
+        ...prev,
+        [message.id]: {
+          answer:
+            "Error while comparing models – check backend logs or try again.",
+        },
+      }));
+    } finally {
+      setCompareLoading((prev) => ({ ...prev, [message.id]: false }));
+    }
+  }
+
   function clearChat() {
     const ok = confirm("Clear chat and reset run history for this session?");
     if (!ok) return;
@@ -263,6 +330,8 @@ const ChatPage: React.FC = () => {
     setMessages([]);
     setPinnedEvidenceId(null);
     setHoveredEvidenceId(null);
+    setComparisons({});
+    setCompareLoading({});
 
     try {
       sessionStorage.removeItem(CHAT_STORAGE_KEY);
@@ -310,47 +379,79 @@ const ChatPage: React.FC = () => {
 
   function formatModelUsed(model?: string | null) {
     if (!model) return "Unknown model";
-    // You can customize this if you know your base vs FT names
     return model;
   }
 
+  function modelKindBadge(meta?: MessageMeta) {
+    if (!meta) return null;
+
+    const isFt = meta.used_finetuned;
+    return (
+      <span
+        className={[
+          "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium border",
+          isFt
+            ? "bg-violet-50 text-violet-700 border-violet-200"
+            : "bg-slate-50 text-slate-600 border-slate-200",
+        ].join(" ")}
+      >
+        <span
+          className={`h-1.5 w-1.5 rounded-full ${
+            isFt ? "bg-violet-500" : "bg-slate-400"
+          }`}
+        />
+        {isFt ? "Fine-tuned" : "Base model"}
+      </span>
+    );
+  }
+
   return (
-    // 🔒 Lock whole layout to viewport height (minus navbar) and prevent page scroll
     <main className="h-[calc(100vh-64px)] bg-bg px-8 py-6 flex gap-6 overflow-hidden">
       {/* LEFT: Chat assistant */}
       <section className="flex-1 flex flex-col min-h-0">
         {/* Header */}
         <div className="flex items-baseline justify-between">
           <div>
-            <h1 className="text-xl font-semibold text-textDark">Chat Assistant</h1>
+            <h1 className="text-xl font-semibold text-textDark">
+              Chat Assistant
+            </h1>
             <p className="text-xs text-textMuted">
-              Ask questions about your documents and get answers backed by retrieved
-              chunks.
+              Ask questions about your documents and get answers backed by
+              retrieved chunks.
             </p>
           </div>
 
           <div className="flex items-center gap-3">
             {/* Fine-tuned toggle */}
-            <label className="flex items-center gap-2 text-[11px] text-textMuted cursor-pointer">
-              <span className="font-medium text-textDark">Use fine-tuned model</span>
-              <button
-                type="button"
-                onClick={() => setUseFinetuned((prev) => !prev)}
-                className={[
-                  "relative inline-flex h-4 w-7 items-center rounded-full border transition",
-                  useFinetuned
-                    ? "bg-primary border-primary"
-                    : "bg-slate-200 border-slate-300",
-                ].join(" ")}
-              >
-                <span
+            <div className="flex flex-col items-end gap-0.5">
+              <label className="flex items-center gap-2 text-[11px] text-textMuted cursor-pointer">
+                <span className="font-medium text-textDark">
+                  Use fine-tuned model
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setUseFinetuned((prev) => !prev)}
                   className={[
-                    "inline-block h-3 w-3 transform rounded-full bg-white shadow transition",
-                    useFinetuned ? "translate-x-3" : "translate-x-0.5",
+                    "relative inline-flex h-4 w-7 items-center rounded-full border transition",
+                    useFinetuned
+                      ? "bg-primary border-primary"
+                      : "bg-slate-200 border-slate-300",
                   ].join(" ")}
-                />
-              </button>
-            </label>
+                >
+                  <span
+                    className={[
+                      "inline-block h-3 w-3 transform rounded-full bg-white shadow transition",
+                      useFinetuned ? "translate-x-3" : "translate-x-0.5",
+                    ].join(" ")}
+                  />
+                </button>
+              </label>
+              <span className="text-[10px] text-textMuted">
+                {useFinetuned
+                  ? "Using instructor tuned on your labeled runs."
+                  : "Using base GPT model only."}
+              </span>
+            </div>
 
             {/* Clear chat button */}
             <button
@@ -383,20 +484,17 @@ const ChatPage: React.FC = () => {
               const isAssistant = m.role === "assistant";
               const allChunks = m.meta?.chunks ?? [];
 
-              // For source pills & evidence, only use Related / Somewhat related chunks
               const evidenceChunks = allChunks.filter(
                 (c) =>
                   c.relevance === "Related" || c.relevance === "Somewhat related"
               );
 
-              // de-dupe by source + chunk index
               const uniqueChunks = Array.from(
                 new Map(
                   evidenceChunks.map((c) => [`${c.source}-${c.chunk}`, c])
                 ).values()
               );
 
-              // Determine which evidence (if any) is active for THIS message
               const baseIdPrefix = m.id;
               const effectiveEvidenceId = pinnedEvidenceId ?? hoveredEvidenceId;
               const activeEvidenceChunk =
@@ -405,6 +503,20 @@ const ChatPage: React.FC = () => {
                     `${baseIdPrefix}-${c.source}-${c.chunk}` === effectiveEvidenceId
                 ) || null;
 
+              const comparison = comparisons[m.id];
+              const isCompareLoading = compareLoading[m.id] ?? false;
+
+              const canCompare =
+                isAssistant && m.meta?.question && m.meta.used_finetuned != null;
+
+              const compareTargetUseFt = m.meta?.used_finetuned
+                ? false
+                : true;
+
+              const compareLabel = m.meta?.used_finetuned
+                ? "Compare with base model"
+                : "Compare with fine-tuned";
+
               return (
                 <div
                   key={m.id}
@@ -412,26 +524,134 @@ const ChatPage: React.FC = () => {
                 >
                   <div
                     className={[
-                      "max-w-[70%] rounded-2xl px-4 py-3 text-sm shadow-soft-sm",
+                      "max-w-[70%] rounded-2xl px-4 py-3 text-sm shadow-soft-sm transition-transform duration-150",
                       isAssistant
-                        ? "bg-slate-50 text-textDark border border-slate-200 rounded-bl-md"
-                        : "bg-primary text-white rounded-br-md",
+                        ? "bg-slate-50 text-textDark border border-slate-200 rounded-bl-md hover:-translate-y-0.5"
+                        : "bg-primary text-white rounded-br-md hover:-translate-y-0.5",
                     ].join(" ")}
                   >
+                    {/* Assistant meta header */}
+                    {isAssistant && m.meta && (
+                      <div className="mb-2 flex items-center justify-between gap-2 text-[10px] text-textMuted">
+                        <div className="flex items-center gap-2 min-w-0">
+                          {modelKindBadge(m.meta)}
+                          <span className="truncate max-w-[180px]">
+                            {formatModelUsed(m.meta.model_used)}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <span>
+                            {m.meta.latency_ms != null
+                              ? `${Math.round(m.meta.latency_ms)} ms`
+                              : "- ms"}
+                          </span>
+                          <span>
+                            {m.meta.trust_score != null
+                              ? `${Math.round(m.meta.trust_score)}%`
+                              : "- %"}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+
                     <p className="whitespace-pre-line">{m.content}</p>
+
+                    {/* Model compare row for assistant messages */}
+                    {isAssistant && m.meta && (
+                      <div className="mt-2 flex items-center justify-between gap-2 text-[10px] text-textMuted">
+                        <div className="flex items-center gap-2">
+                          <span className="rounded-full bg-slate-100 px-2 py-0.5">
+                            k = {m.meta.top_k ?? topK}
+                          </span>
+                        </div>
+                        {canCompare && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleCompare(m, compareTargetUseFt)
+                            }
+                            disabled={isCompareLoading}
+                            className="inline-flex items-center gap-1 rounded-full border border-slate-200 px-2 py-0.5 text-[10px] hover:border-primary/60 hover:text-primary disabled:opacity-60 disabled:cursor-not-allowed"
+                          >
+                            {isCompareLoading && (
+                              <span className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />
+                            )}
+                            <span>{compareLabel}</span>
+                          </button>
+                        )}
+                      </div>
+                    )}
+
+                    {/* A/B comparison panel */}
+                    {isAssistant && comparison && (
+                      <div className="mt-3 rounded-2xl border border-indigo-100 bg-indigo-50/50 px-3 py-2 text-[11px] text-textMuted">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-[11px] font-semibold text-textDark">
+                            A/B comparison
+                          </span>
+                          <span className="text-[10px] text-textMuted truncate max-w-[160px]">
+                            {comparison.used_finetuned
+                              ? "Comparison: Fine-tuned"
+                              : "Comparison: Base model"}
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-2 gap-3 mt-1">
+                          <div>
+                            <div className="flex items-center justify-between mb-1 text-[10px] text-textMuted">
+                              <span className="font-semibold">
+                                Original answer
+                              </span>
+                              <span className="truncate max-w-[110px]">
+                                {formatModelUsed(m.meta?.model_used)}
+                              </span>
+                            </div>
+                            <div className="rounded-xl bg-white/80 border border-slate-200 px-2 py-1.5 text-[11px] text-textDark max-h-32 overflow-y-auto whitespace-pre-line">
+                              {m.content}
+                            </div>
+                            <div className="mt-1 text-[10px] text-slate-400">
+                              Latency:{" "}
+                              {m.meta?.latency_ms != null
+                                ? `${Math.round(m.meta.latency_ms)} ms`
+                                : "-"}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="flex items-center justify-between mb-1 text-[10px] text-textMuted">
+                              <span className="font-semibold">
+                                Comparison answer
+                              </span>
+                              <span className="truncate max-w-[110px]">
+                                {formatModelUsed(comparison.model_used)}
+                              </span>
+                            </div>
+                            <div className="rounded-xl bg-white/80 border border-slate-200 px-2 py-1.5 text-[11px] text-textDark max-h-32 overflow-y-auto whitespace-pre-line">
+                              {comparison.answer}
+                            </div>
+                            <div className="mt-1 text-[10px] text-slate-400">
+                              Latency:{" "}
+                              {comparison.latency_ms != null
+                                ? `${Math.round(comparison.latency_ms)} ms`
+                                : "-"}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
 
                     {/* Source pills + evidence preview for assistant messages */}
                     {isAssistant && uniqueChunks.length > 0 && (
-                      // wrapper handles mouse leave for whole sources area
                       <div
                         className="mt-3 border-t border-slate-200 pt-2"
                         onMouseLeave={() => {
-                          // Only clear hover (keep pin)
                           setHoveredEvidenceId(null);
                         }}
                       >
-                        <div className="mb-1 text-[11px] font-medium text-textMuted">
-                          Sources
+                        <div className="mb-1 flex items-center justify-between text-[11px] text-textMuted">
+                          <span className="font-medium">Sources</span>
+                          <span className="text-[10px]">
+                            {uniqueChunks.length} chunk
+                            {uniqueChunks.length === 1 ? "" : "s"}
+                          </span>
                         </div>
                         <div className="flex flex-wrap gap-1.5">
                           {uniqueChunks.map((c, idx) => {
@@ -447,12 +667,10 @@ const ChatPage: React.FC = () => {
                                     setHoveredEvidenceId(chunkId);
                                   }
                                 }}
-                                // no onMouseLeave here -> prevents flicker
                                 onClick={() => {
                                   setPinnedEvidenceId((current) =>
                                     current === chunkId ? null : chunkId
                                   );
-                                  // keep this chunk active as hovered too
                                   setHoveredEvidenceId(chunkId);
                                 }}
                                 className={[
@@ -506,8 +724,7 @@ const ChatPage: React.FC = () => {
                                 dist{" "}
                                 {activeEvidenceChunk.distance != null
                                   ? activeEvidenceChunk.distance.toFixed(3)
-                                  : "-"
-                                }
+                                  : "-"}
                               </span>
                               {pinnedEvidenceId ===
                                 `${baseIdPrefix}-${activeEvidenceChunk.source}-${activeEvidenceChunk.chunk}` && (
@@ -552,7 +769,7 @@ const ChatPage: React.FC = () => {
             <button
               type="submit"
               disabled={loading || !input.trim()}
-              className="rounded-full bg-primary px-5 py-2 text-sm font-medium text-white shadow-soft disabled:cursor-not-allowed disabled:bg-primary/40"
+              className="rounded-full bg-primary px-5 py-2 text-sm font-medium text-white shadow-soft disabled:cursor-not-allowed disabled:bg-primary/40 transition-transform active:scale-95"
             >
               {loading ? "Sending…" : "Send"}
             </button>
@@ -587,7 +804,7 @@ const ChatPage: React.FC = () => {
             </p>
           </div>
 
-          {/* Rebuild index button */}
+          {/* Rebuild index + model used */}
           <div className="mt-4 flex items-center justify-between">
             <button
               onClick={async () => {
@@ -615,9 +832,12 @@ const ChatPage: React.FC = () => {
             </button>
 
             {lastMeta && (
-              <div className="text-[10px] text-textMuted text-right">
-                <div className="font-medium text-textDark">Model used</div>
-                <div className="truncate max-w-[150px]">
+              <div className="text-[10px] text-textMuted text-right max-w-[170px]">
+                <div className="flex items-center justify-end gap-2 mb-0.5">
+                  <span className="font-medium text-textDark">Model used</span>
+                  {modelKindBadge(lastMeta)}
+                </div>
+                <div className="truncate">
                   {formatModelUsed(lastMeta.model_used)}
                 </div>
               </div>
@@ -775,7 +995,8 @@ const ChatPage: React.FC = () => {
             </>
           ) : (
             <div className="mt-5 rounded-2xl bg-slate-50 px-3 py-3 text-[11px] text-textMuted">
-              Ask a question to see trust score and retrieved chunk details here.
+              Ask a question to see trust score and retrieved chunk details
+              here.
             </div>
           )}
         </div>
